@@ -1,0 +1,20 @@
+fastapi
+uvicorn
+pydantic[email]
+pydantic-settings
+sqlalchemy[asyncio]
+asyncpg
+alembic
+redis
+celery
+pika
+structlog
+
+# Testing & Dev
+pytest
+pytest-asyncio
+pytest-cov
+httpx
+testcontainers
+ruff
+mypy

@@ -161,9 +161,11 @@ All endpoints return a consistent structure:
 `status`, `result` (JSONB), `created_at`, `updated_at`.
 
 **Indexes** — the report/analytics queries filter `orders` by a `created_at`
-range and aggregate `total_amount`; the covering index answers that from an
-Index Only Scan. The composites back the `GROUP BY region` / `GROUP BY status`
-breakdowns:
+range and aggregate `total_amount` (via `count(*)` / `sum` / `avg`, so no
+column falls outside the index); the covering index answers that from an Index
+Only Scan once the table's visibility map is set (autovacuum in production;
+`VACUUM ANALYZE` in the benchmark), an Index Scan otherwise. The composites
+back the `GROUP BY region` / `GROUP BY status` breakdowns:
 
 ```sql
 CREATE INDEX idx_orders_created_at ON orders (created_at DESC) INCLUDE (total_amount);

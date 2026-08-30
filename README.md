@@ -186,11 +186,14 @@ healthcheck-gated and the schema is initialized before the API accepts traffic.
 docker-compose run --rm api pytest -v --cov=app tests/
 ```
 
-- **Unit** — schema validation, report aggregation math.
-- **Integration** — API endpoints against an isolated test database
-  (`testcontainers`): ingestion, idempotency collision, cache hit/miss.
-- **Worker** — Celery in eager mode: state transitions, retry path, DLQ routing,
-  idempotent re-run.
+- **Unit** (`test_api.py`) — schema validation, the structured-error envelope,
+  route delegation, and the ingestion service's idempotency + cache
+  invalidation, all with the DB and Redis mocked.
+- **Integration** (`test_integration.py`) — report aggregation SQL against a
+  real PostgreSQL 16 via `testcontainers`. Skipped automatically when no
+  Docker daemon is reachable.
+- **Worker** (`test_workers.py`) — state transitions, deterministic re-run,
+  and `DEAD_LETTER` routing via the task's `on_failure` handler.
 
 ## 7. Run the index benchmark
 

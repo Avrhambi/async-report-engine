@@ -57,42 +57,23 @@ def test_rerun_is_deterministic(repo: MagicMock):
     assert first == second
 
 
-def test_permanent_failure_routes_to_dead_letter(repo: MagicMock):
+def test_on_failure_routes_to_dead_letter(repo: MagicMock):
+    """When retries are exhausted Celery calls on_failure; the report row is
+    moved to DEAD_LETTER and the worker keeps running."""
     dead_repo = MagicMock()
-    call = {"n": 0}
-
-    def _repo_factory(_session):
-        call["n"] += 1
-        return repo if call["n"] == 1 else dead_repo
-
-    fake_self = SimpleNamespace(
-        request=SimpleNamespace(retries=3), max_retries=3
-    )
-    repo.get_by_task_id.side_effect = RuntimeError("db down")
 
     with patch.object(tasks, "SyncSessionLocal", return_value=_fake_session_cm(repo)), \
-         patch.object(tasks, "SyncReportRepository", side_effect=_repo_factory):
-        # Terminal retry: body swallows the error and routes to DLQ.
-        tasks.run_generate_report(fake_self, "rpt_1")
+         patch.object(tasks, "SyncReportRepository", return_value=dead_repo):
+        task = tasks.ReportTask()
+        task.on_failure(
+            RuntimeError("permanent"), "celery-uuid", ("rpt_1",), {}, None
+        )
 
     dead_repo.set_status.assert_called_once_with("rpt_1", "DEAD_LETTER")
 
 
-def test_transient_failure_retries(repo: MagicMock):
-    retried = {"called": False}
-
-    def _retry(exc=None):
-        retried["called"] = True
-        return RuntimeError("retry scheduled")
-
-    fake_self = SimpleNamespace(
-        request=SimpleNamespace(retries=0), max_retries=3, retry=_retry
-    )
-    repo.get_by_task_id.side_effect = RuntimeError("transient")
-
-    with patch.object(tasks, "SyncSessionLocal", return_value=_fake_session_cm(repo)), \
-         patch.object(tasks, "SyncReportRepository", return_value=repo), \
-         pytest.raises(RuntimeError):
-        tasks.run_generate_report(fake_self, "rpt_1")
-
-    assert retried["called"] is True
+def test_task_declares_autoretry_with_backoff():
+    opts = tasks.generate_report_task
+    assert opts.max_retries == 3
+    assert Exception in opts.autoretry_for
+    assert opts.retry_backoff is True

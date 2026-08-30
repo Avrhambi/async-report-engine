@@ -44,26 +44,35 @@ def _dead_letter(task_id: str) -> None:
         SyncReportRepository(session).set_status(task_id, "DEAD_LETTER")
 
 
-def run_generate_report(task: Task, task_id: str) -> None:
-    """Task body, separated from the decorator so it is directly testable."""
-    try:
-        _compute(task_id)
-    except Exception as exc:  # noqa: BLE001
-        retries = task.request.retries if task.request else 0
-        if retries >= (task.max_retries or 0):
-            logger.error("report_dead_letter", task_id=task_id, error=str(exc))
-            _dead_letter(task_id)
-            return
-        raise task.retry(exc=exc) from exc
+class ReportTask(Task):
+    """Base task: on permanent failure route the report to the DLQ state
+    instead of letting the exception crash the worker pipeline."""
+
+    def on_failure(
+        self,
+        exc: Exception,
+        task_id: str,
+        args: tuple,
+        kwargs: dict,
+        einfo: object,
+    ) -> None:
+        report_task_id = args[0] if args else kwargs.get("task_id")
+        if report_task_id:
+            logger.error(
+                "report_dead_letter", task_id=report_task_id, error=str(exc)
+            )
+            _dead_letter(report_task_id)
 
 
 @celery_app.task(
+    base=ReportTask,
     bind=True,
     name="app.workers.tasks.generate_report_task",
     max_retries=3,
+    autoretry_for=(Exception,),
     retry_backoff=True,
     retry_backoff_max=60,
     retry_jitter=False,
 )
 def generate_report_task(self: Task, task_id: str) -> None:
-    run_generate_report(self, task_id)
+    _compute(task_id)

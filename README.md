@@ -17,7 +17,7 @@ Redis · pytest + Testcontainers · CI: ruff + mypy + pytest (zero lint / zero t
 
 ```mermaid
 flowchart TD
-    Client(["Client / Dashboard"]) <->|"POST /events/batch"| API["FastAPI Gateway"]
+    Client(["Client / Dashboard"]) <-->|"POST /events/batch"| API["FastAPI Gateway"]
     Client <-->|"POST /reports/generate"| API
     Client <-->|"GET /reports/{task_id}"| API
     Client <--->|"GET /analytics/metrics"| API

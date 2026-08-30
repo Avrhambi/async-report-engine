@@ -11,8 +11,6 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://localhost:6379/0"
     CELERY_BROKER_URL: str = "amqp://guest:guest@localhost:5672//"
 
-    ANALYTICS_CACHE_TTL_SECONDS: int = 30
-
     model_config = SettingsConfigDict(
         env_file=".env", env_file_encoding="utf-8", extra="ignore"
     )

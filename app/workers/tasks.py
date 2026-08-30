@@ -38,15 +38,38 @@ def _compute(task_id: str) -> None:
         logger.info("report_generated", task_id=task_id)
 
 
-def _dead_letter(task_id: str) -> None:
-    """Route a permanently failed job to DEAD_LETTER without crashing."""
+def _set_status(task_id: str, status: str) -> None:
     with SyncSessionLocal() as session:
-        SyncReportRepository(session).set_status(task_id, "DEAD_LETTER")
+        SyncReportRepository(session).set_status(task_id, status)
 
 
 class ReportTask(Task):
-    """Base task: on permanent failure route the report to the DLQ state
-    instead of letting the exception crash the worker pipeline."""
+    """Base task tracking the report lifecycle:
+
+    - a failed attempt that still has retries left  -> FAILURE
+    - retries exhausted (Celery calls on_failure)   -> DEAD_LETTER
+
+    Neither lets the exception crash the worker pipeline.
+    """
+
+    @staticmethod
+    def _report_id(args: tuple, kwargs: dict) -> str | None:
+        return args[0] if args else kwargs.get("task_id")
+
+    def on_retry(
+        self,
+        exc: Exception,
+        task_id: str,
+        args: tuple,
+        kwargs: dict,
+        einfo: object,
+    ) -> None:
+        report_task_id = self._report_id(args, kwargs)
+        if report_task_id:
+            logger.warning(
+                "report_attempt_failed", task_id=report_task_id, error=str(exc)
+            )
+            _set_status(report_task_id, "FAILURE")
 
     def on_failure(
         self,
@@ -56,12 +79,12 @@ class ReportTask(Task):
         kwargs: dict,
         einfo: object,
     ) -> None:
-        report_task_id = args[0] if args else kwargs.get("task_id")
+        report_task_id = self._report_id(args, kwargs)
         if report_task_id:
             logger.error(
                 "report_dead_letter", task_id=report_task_id, error=str(exc)
             )
-            _dead_letter(report_task_id)
+            _set_status(report_task_id, "DEAD_LETTER")
 
 
 @celery_app.task(

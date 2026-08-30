@@ -43,6 +43,17 @@ def test_events_batch_rejects_negative_amount(client):
     assert body["detail"][0]["loc"][-1] == "total_amount"
 
 
+def test_events_batch_rejects_bad_timestamp(client):
+    bad = {**VALID_EVENT, "created_at": "not-a-date"}
+    resp = client.post(
+        "/api/v1/events/batch",
+        json={"events": [bad]},
+        headers={"Idempotency-Key": "k1"},
+    )
+    assert resp.status_code == 422
+    assert isinstance(resp.json()["detail"], list)
+
+
 def test_events_batch_accepts_and_delegates(client, monkeypatch):
     mock = AsyncMock(
         return_value={"status": "accepted", "ingested": 1, "duplicates": 0}

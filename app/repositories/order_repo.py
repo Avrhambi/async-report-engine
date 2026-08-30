@@ -1,11 +1,15 @@
-"""All SQLAlchemy queries against the orders table live here."""
+"""Async SQLAlchemy queries against the orders table (API side).
+
+The report aggregation SQL lives in sync_report_repo.py (worker side) so the
+determinism guarantee has a single implementation.
+"""
 from __future__ import annotations
 
 import datetime
 import uuid
 from typing import Any
 
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -49,85 +53,6 @@ class OrderRepository:
         inserted = len(result.scalars().all())
         await self.session.commit()
         return inserted
-
-    async def report_aggregates(
-        self,
-        date_from: datetime.date,
-        date_to: datetime.date,
-        group_by: list[str],
-    ) -> dict[str, Any]:
-        """Compute the report payload entirely in SQL.
-
-        Deterministic: same rows + same params -> byte-identical output.
-        """
-        upper = datetime.datetime.combine(
-            date_to, datetime.time.max, tzinfo=datetime.timezone.utc
-        )
-        lower = datetime.datetime.combine(
-            date_from, datetime.time.min, tzinfo=datetime.timezone.utc
-        )
-        window = (Order.created_at >= lower) & (Order.created_at <= upper)
-
-        totals_stmt = select(
-            func.coalesce(func.sum(Order.total_amount), 0).label("total_revenue"),
-            func.count(Order.id).label("order_count"),
-            func.coalesce(func.avg(Order.total_amount), 0).label("aov"),
-        ).where(window)
-        totals = (await self.session.execute(totals_stmt)).one()
-
-        breakdowns: dict[str, dict[str, float]] = {}
-        for field in group_by:
-            col = {"region": Order.region, "status": Order.status}.get(field)
-            if col is None:
-                continue
-            stmt = (
-                select(col, func.coalesce(func.sum(Order.total_amount), 0))
-                .where(window)
-                .group_by(col)
-                .order_by(col)
-            )
-            breakdowns[field] = {
-                str(k): float(v) for k, v in (await self.session.execute(stmt)).all()
-            }
-
-        by_day_stmt = (
-            select(
-                func.date_trunc("day", Order.created_at).label("day"),
-                func.coalesce(func.sum(Order.total_amount), 0).label("revenue"),
-            )
-            .where(window)
-            .group_by(text("day"))
-            .order_by(text("day"))
-        )
-        by_day = [
-            {"day": day.date().isoformat(), "revenue": float(revenue)}
-            for day, revenue in (await self.session.execute(by_day_stmt)).all()
-        ]
-
-        # Period-over-period: same-length window immediately before this one.
-        span = upper - lower
-        prev_stmt = select(
-            func.coalesce(func.sum(Order.total_amount), 0)
-        ).where(
-            (Order.created_at >= lower - span) & (Order.created_at < lower)
-        )
-        prev_revenue = float((await self.session.execute(prev_stmt)).scalar_one())
-        current_revenue = float(totals.total_revenue)
-        if prev_revenue > 0:
-            growth = round((current_revenue - prev_revenue) / prev_revenue, 4)
-        else:
-            growth = None
-
-        payload: dict[str, Any] = {
-            "total_revenue": round(current_revenue, 2),
-            "order_count": int(totals.order_count),
-            "average_order_value": round(float(totals.aov), 2),
-            "by_day": by_day,
-            "growth_vs_previous_period": growth,
-        }
-        for field, data in breakdowns.items():
-            payload[f"by_{field}"] = data
-        return payload
 
     async def rolling_metrics(self, window_hours: int = 24) -> dict[str, Any]:
         since = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(

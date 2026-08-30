@@ -12,7 +12,7 @@ import pytest
 from app.workers import tasks
 
 
-def _fake_session_cm(repo: MagicMock) -> MagicMock:
+def _fake_session_cm() -> MagicMock:
     cm = MagicMock()
     cm.__enter__.return_value = MagicMock()
     cm.__exit__.return_value = False
@@ -35,8 +35,22 @@ def repo() -> MagicMock:
     return r
 
 
+def test_failed_attempt_with_retries_left_is_marked_failure(repo: MagicMock):
+    """A failing attempt that Celery will still retry shows as FAILURE;
+    DEAD_LETTER is reserved for exhausted retries."""
+    fail_repo = MagicMock()
+
+    with patch.object(tasks, "SyncSessionLocal", return_value=_fake_session_cm()), \
+         patch.object(tasks, "SyncReportRepository", return_value=fail_repo):
+        tasks.ReportTask().on_retry(
+            RuntimeError("transient"), "celery-uuid", ("rpt_1",), {}, None
+        )
+
+    fail_repo.set_status.assert_called_once_with("rpt_1", "FAILURE")
+
+
 def test_compute_transitions_and_saves(repo: MagicMock):
-    with patch.object(tasks, "SyncSessionLocal", return_value=_fake_session_cm(repo)), \
+    with patch.object(tasks, "SyncSessionLocal", return_value=_fake_session_cm()), \
          patch.object(tasks, "SyncReportRepository", return_value=repo):
         tasks._compute("rpt_1")
 
@@ -48,7 +62,7 @@ def test_compute_transitions_and_saves(repo: MagicMock):
 
 
 def test_rerun_is_deterministic(repo: MagicMock):
-    with patch.object(tasks, "SyncSessionLocal", return_value=_fake_session_cm(repo)), \
+    with patch.object(tasks, "SyncSessionLocal", return_value=_fake_session_cm()), \
          patch.object(tasks, "SyncReportRepository", return_value=repo):
         tasks._compute("rpt_1")
         first = repo.save_result.call_args.args[3]
@@ -62,7 +76,7 @@ def test_on_failure_routes_to_dead_letter(repo: MagicMock):
     moved to DEAD_LETTER and the worker keeps running."""
     dead_repo = MagicMock()
 
-    with patch.object(tasks, "SyncSessionLocal", return_value=_fake_session_cm(repo)), \
+    with patch.object(tasks, "SyncSessionLocal", return_value=_fake_session_cm()), \
          patch.object(tasks, "SyncReportRepository", return_value=dead_repo):
         task = tasks.ReportTask()
         task.on_failure(

@@ -272,7 +272,7 @@ See [§4.1](#41-index-performance-database_migrationsexplain_benchmarksql).
 
 ---
 
-## 9. Quality gates (CI)
+## 8. Quality gates (CI)
 
 On every push / PR: `ruff` (lint) + `mypy` (types) + `pytest` (tests + coverage).
 Zero linter and zero typing errors required.

@@ -20,10 +20,16 @@ flowchart TD
     Client([Client / Dashboard]) -->|POST /events/batch| API[FastAPI Gateway]
     Client -->|POST /reports/generate| API
     Client -->|GET /analytics/metrics| API
+    Client -->|GET /reports/task_id poll| API
+
+    API -->|202 + task_id| Client
+    API -->|metrics JSON / report status + result| Client
 
     API -->|1. Bulk Insert| DB[(PostgreSQL 16)]
     API -->|2. Dispatch Job| RMQ[RabbitMQ Broker]
-    API <-->|Cache-Aside| REDIS[(Redis Cache)]
+    API <-->|Cache-Aside read / populate-on-miss| REDIS[(Redis Cache)]
+    API -->|Read on cache miss: report status, metrics| DB
+    DB -->|rows| API
 
     RMQ -->|Consume Task| WORKER[Celery Worker]
     WORKER -->|Heavy Aggregation SQL| DB

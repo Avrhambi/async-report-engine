@@ -82,9 +82,11 @@ events are ingested.
 (Mirrors `ASSIGNMENT.md` — every item there maps to one here.)
 
 - [~] `docker-compose up --build` starts API, worker, database, cache, and
-      broker cleanly without race conditions. *(compose + healthcheck-gated
-      deps + `/docker-entrypoint-initdb.d` schema mount written; not yet run —
-      no local Docker daemon.)*
+      broker cleanly without race conditions. *(compose + `condition:
+      service_healthy` deps + `/docker-entrypoint-initdb.d` schema mount; the
+      db healthcheck uses `pg_isready -h 127.0.0.1` so it only passes once the
+      real TCP listener is up, after the initdb script. Not yet run — no local
+      Docker daemon.)*
 - [x] Endpoints validate inputs strictly and return consistent structured error
       responses. *(Pydantic v2 + `RequestValidationError`/`HTTPException`
       handlers normalising to `{"detail": [...]}`.)*
@@ -113,6 +115,8 @@ events are ingested.
       locally — no Docker daemon — but the integration suite executes in CI on
       `ubuntu-latest`.)*
 - [~] Unit, integration, and worker tests all pass locally and in CI with
-      0 linter and 0 typing errors. *(unit + worker: 14 pass, ruff 0, mypy 0
-      on a local py3.10 venv. Integration (`testcontainers`) skips without
-      Docker — never executed. CI workflow added, not yet run.)*
+      0 linter and 0 typing errors. *(unit + worker + logging: 17 pass, ruff 0,
+      mypy 0 on a local py3.10 venv. The 3 `testcontainers` integration tests
+      skip without Docker — never executed locally; they run in CI on
+      `ubuntu-latest`, which has a Docker daemon. CI workflow added, not yet
+      run.)*

@@ -27,9 +27,16 @@ class OrderRepository:
 
         Returns the number of rows actually inserted (new orders); the
         caller derives the duplicate count from the batch size.
+
+        ON CONFLICT resolves collisions against *stored* rows only -- two rows
+        with the same order_id in one INSERT raise "cannot affect row a second
+        time". So we dedup the batch by order_id first (last occurrence wins),
+        leaving the statement only unique targets.
         """
         if not events:
             return 0
+
+        deduped = list({e["order_id"]: e for e in events}.values())
 
         rows = [
             {
@@ -41,7 +48,7 @@ class OrderRepository:
                 "region": e["region"],
                 "created_at": e["created_at"],
             }
-            for e in events
+            for e in deduped
         ]
         stmt = (
             pg_insert(Order)

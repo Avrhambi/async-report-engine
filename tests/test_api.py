@@ -70,6 +70,44 @@ def test_events_batch_accepts_and_delegates(client, monkeypatch):
     assert mock.await_args.args[0] == "k1"
 
 
+def test_events_batch_rejects_oversized_batch(client):
+    resp = client.post(
+        "/api/v1/events/batch",
+        json={"events": [VALID_EVENT] * 1001},
+        headers={"Idempotency-Key": "k1"},
+    )
+    assert resp.status_code == 422
+    assert isinstance(resp.json()["detail"], list)
+
+
+@pytest.mark.asyncio
+async def test_bulk_insert_dedups_intra_batch_order_ids():
+    from unittest.mock import MagicMock
+
+    from app.repositories.order_repo import OrderRepository
+
+    session = AsyncMock()
+    result = MagicMock()
+    result.scalars.return_value.all.return_value = ["ord_1001"]
+    session.execute.return_value = result
+
+    repo = OrderRepository(session)
+    events = [
+        {**VALID_EVENT, "order_id": "ord_1001"},
+        {**VALID_EVENT, "order_id": "ord_1001"},
+        {**VALID_EVENT, "order_id": "ord_1002"},
+    ]
+    await repo.bulk_insert_ignore_duplicates(events)
+
+    stmt = session.execute.await_args.args[0]
+    # Two distinct order_ids reach the INSERT, not three.
+    compiled = stmt.compile()
+    order_id_params = sorted(
+        v for k, v in compiled.params.items() if k.startswith("order_id")
+    )
+    assert order_id_params == ["ord_1001", "ord_1002"]
+
+
 @pytest.mark.asyncio
 async def test_analytics_loser_serves_cache_without_second_query(fake_redis):
     import asyncio

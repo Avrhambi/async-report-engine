@@ -70,6 +70,28 @@ def test_events_batch_accepts_and_delegates(client, monkeypatch):
     assert mock.await_args.args[0] == "k1"
 
 
+@pytest.mark.asyncio
+async def test_analytics_loser_serves_cache_without_second_query(fake_redis):
+    import asyncio
+
+    from app.services.analytics_service import AnalyticsService
+
+    repo = AsyncMock()
+    repo.rolling_metrics.return_value = {
+        "window": "24h",
+        "revenue": 1.0,
+        "order_count": 1,
+        "average_order_value": 1.0,
+        "orders_by_region": {"EU": 1},
+    }
+    svc = AnalyticsService(repo, fake_redis)
+
+    await asyncio.gather(svc.get_metrics(), svc.get_metrics())
+
+    # Single-flight: the second concurrent miss waited and read the cache.
+    assert repo.rolling_metrics.await_count == 1
+
+
 def test_generate_report_returns_task_id(client, monkeypatch):
     monkeypatch.setattr(
         routes.ReportService,

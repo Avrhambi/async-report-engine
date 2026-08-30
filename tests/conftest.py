@@ -18,8 +18,17 @@ class FakeRedis:
     async def get(self, key: str) -> str | None:
         return self.store.get(key)
 
-    async def set(self, key: str, value: str, ex: int | None = None) -> None:
+    async def set(
+        self,
+        key: str,
+        value: str,
+        ex: int | None = None,
+        nx: bool = False,
+    ) -> bool | None:
+        if nx and key in self.store:
+            return None
         self.store[key] = value
+        return True
 
     async def setex(self, key: str, ttl: int, value: str) -> None:
         self.store[key] = value

@@ -10,7 +10,7 @@ from collections.abc import Iterator
 
 import pytest
 
-testcontainers = pytest.importorskip("testcontainers.postgres")
+tc_postgres = pytest.importorskip("testcontainers.postgres")
 
 from app.domain.models import Base  # noqa: E402
 from app.repositories.sync_report_repo import SyncReportRepository  # noqa: E402
@@ -20,11 +20,17 @@ from sqlalchemy.orm import Session, sessionmaker  # noqa: E402
 
 @pytest.fixture(scope="module")
 def pg_session() -> Iterator[Session]:
+    container = tc_postgres.PostgresContainer("postgres:16")
     try:
-        container = testcontainers.postgres.PostgresContainer("postgres:16")
         container.start()
     except Exception as exc:  # pragma: no cover - env-dependent
-        pytest.skip(f"Docker unavailable: {exc}")
+        # Only a genuine "no Docker daemon reachable" should skip. Any other
+        # error (bad image, fixture bug) must surface as a failure.
+        from docker.errors import DockerException
+
+        if isinstance(exc, DockerException) or "docker" in str(exc).lower():
+            pytest.skip(f"Docker unavailable: {exc}")
+        raise
 
     url = container.get_connection_url().replace("psycopg2", "psycopg")
     engine = create_engine(url)

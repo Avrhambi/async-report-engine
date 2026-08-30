@@ -90,23 +90,31 @@ reading a handful of index pages instead of the whole heap. Dropping the index f
 
 #### Index Performance Verification (150,000 Rows Dataset)
 
-Query: aggregating order count and total revenue across a rolling 2-day date window
-(~2% of the table). Measured from a real `EXPLAIN (ANALYZE, BUFFERS)` run against
-PostgreSQL 16 (absolute times vary by hardware — run the script to get your own):
+Query: aggregating order count, total revenue and average order value across a rolling
+2-day date window (~2% of a 150,000-row table). Measured from a real
+`EXPLAIN (ANALYZE, BUFFERS)` run against PostgreSQL 16 in the `docker-compose` `db`
+service. The buffer counts and plan shape are deterministic across runs; absolute
+execution time varies by hardware and (for the seq scan) run-to-run — run the script
+to get your own.
 
-* **Without Index (`Parallel Seq Scan`):** `Execution Time: 14.891 ms` | `Buffers: shared hit=2235` (73,560 rows removed by filter per worker)
-* **With Covering Index (`Index Only Scan`):** `Execution Time: 0.440 ms` | `Buffers: shared hit=15` | `Heap Fetches: 0`
-* **Optimization Gain:** **~34x latency reduction** (14.891 ms → 0.440 ms), and heap
-  reads drop from 2235 buffers to 15 — zero heap fetches once the visibility map is
-  synchronized by `VACUUM`.
+* **Without Index (`Parallel Seq Scan`):** `Buffers: shared hit=2235`, 73,560 rows
+  removed by filter per worker, `Execution Time` ≈ 19–25 ms.
+* **With Covering Index (`Index Only Scan`):** `Buffers: shared hit=15`,
+  `Heap Fetches: 0`, `Execution Time` ≈ 0.6 ms.
+* **Optimization Gain:** buffer reads drop from 2235 to 15 (**~150x fewer pages**),
+  zero heap fetches once the visibility map is synchronized by `VACUUM`, and a
+  **~30–40x latency reduction** on this machine.
 
-`test_integration.py::test_report_query_uses_created_at_index_not_seq_scan` asserts this
-plan difference against a real PostgreSQL 16 (Testcontainers); it runs wherever a Docker
-daemon is reachable — CI on `ubuntu-latest`, or `docker-compose run --rm api pytest`
-locally — and skips otherwise.
+`test_integration.py::test_report_query_uses_created_at_index_not_seq_scan` asserts the
+weaker, hardware-independent half of this against a real PostgreSQL 16: that
+`idx_orders_created_at` appears in the plan and `Seq Scan` does not (an *Index Only
+Scan*, *Index Scan* or *Bitmap Index Scan* all pass). It runs against the `db` service
+in CI and via `docker-compose run --rm -e TEST_DATABASE_URL=... api pytest` locally, and
+falls back to a Testcontainers Postgres when `TEST_DATABASE_URL` is unset and a Docker
+daemon is reachable.
 
 ```bash
-docker-compose exec db psql -U user -d analytics_db -f /database_migrations/explain_benchmark.sql
+docker-compose exec -T db psql -U user -d analytics_db < database_migrations/explain_benchmark.sql
 ```
 
 ### 3.2 Cache-Aside effectiveness
@@ -127,7 +135,7 @@ window that predates the latest batch.
 | **Permanent task failure** | 3 failures → `DEAD_LETTER` state via `on_failure`; main queue keeps draining |
 | **Slow dependency at startup** | Compose services are healthcheck-gated; schema initialized before the API accepts traffic |
 | **Observability** | `app.core.logging` — single JSON formatter shared by API and worker; configures idempotently (tested) |
-| **Regression safety** | ruff + mypy + pytest on every push/PR; integration + query-plan tests via Testcontainers |
+| **Regression safety** | ruff + mypy + full pytest (unit + integration) on every push/PR against a `postgres:16` service |
 
 ---
 
@@ -232,6 +240,13 @@ Services are healthcheck-gated; the schema is initialized before the API accepts
 ### Tests
 
 ```bash
+# full suite (17 unit/worker/logging + 3 integration) against the compose db
+docker-compose run --rm \
+  -e TEST_DATABASE_URL=postgresql+psycopg://user:password@db:5432/analytics_db \
+  api pytest -v --cov=app tests/
+
+# unit-only (no DB): omit TEST_DATABASE_URL — the 3 integration tests then
+# use Testcontainers if a Docker socket is reachable, else skip.
 docker-compose run --rm api pytest -v --cov=app tests/
 ```
 
@@ -240,15 +255,17 @@ docker-compose run --rm api pytest -v --cov=app tests/
   cache invalidation, with DB and Redis mocked.
 - **Logging** (`test_logging.py`) — `app.core.logging` emits JSON and configures idempotently.
 - **Integration** (`test_integration.py`) — report aggregation SQL and the
-  `idx_orders_created_at` query plan against a real PostgreSQL 16 via Testcontainers.
-  Skipped when no Docker daemon is reachable; runs in CI.
+  `idx_orders_created_at` query plan against a real PostgreSQL 16. Uses
+  `TEST_DATABASE_URL` when set (the compose `db`, or the CI `postgres:16`
+  service), otherwise a Testcontainers Postgres; skipped only when neither is
+  available.
 - **Worker** (`test_workers.py`) — state transitions, deterministic re-run, and
   `DEAD_LETTER` routing via the task's `on_failure` handler.
 
 ### Index benchmark
 
 ```bash
-docker-compose exec db psql -U user -d analytics_db -f /database_migrations/explain_benchmark.sql
+docker-compose exec -T db psql -U user -d analytics_db < database_migrations/explain_benchmark.sql
 ```
 
 See [§3.1](#31-index-performance-database_migrationsexplain_benchmarksql).

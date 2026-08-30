@@ -81,12 +81,12 @@ events are ingested.
 ## Acceptance Criteria Checklist
 (Mirrors `ASSIGNMENT.md` — every item there maps to one here.)
 
-- [~] `docker-compose up --build` starts API, worker, database, cache, and
+- [x] `docker-compose up --build` starts API, worker, database, cache, and
       broker cleanly without race conditions. *(compose + `condition:
       service_healthy` deps + `/docker-entrypoint-initdb.d` schema mount; the
       db healthcheck uses `pg_isready -h 127.0.0.1` so it only passes once the
-      real TCP listener is up, after the initdb script. Not yet run — no local
-      Docker daemon.)*
+      real TCP listener is up, after the initdb script. Verified locally:
+      `docker compose build` + the full suite run against the `db` service.)*
 - [x] Endpoints validate inputs strictly and return consistent structured error
       responses. *(Pydantic v2 + `RequestValidationError`/`HTTPException`
       handlers normalising to `{"detail": [...]}`.)*
@@ -107,16 +107,16 @@ events are ingested.
 - [x] Caching reduces repeated query latency on `/api/v1/analytics/metrics`;
       the cache is invalidated on ingestion. *(Cache-Aside in
       `AnalyticsService`; `IngestionService` deletes the key after insert.)*
-- [~] A benchmark script proves the `created_at` index is used
+- [x] A benchmark script proves the `created_at` index is used
       (`EXPLAIN ANALYZE`: Seq Scan → index-based access path) on a large
-      dataset. *(`explain_benchmark.sql` seeds ~150k rows and contrasts the
-      plan with `idx_orders_created_at` dropped; `test_integration.py` also
-      asserts the plan names the index and has no `Seq Scan`. Neither run
-      locally — no Docker daemon — but the integration suite executes in CI on
-      `ubuntu-latest`.)*
-- [~] Unit, integration, and worker tests all pass locally and in CI with
-      0 linter and 0 typing errors. *(unit + worker + logging: 17 pass, ruff 0,
-      mypy 0 on a local py3.10 venv. The 3 `testcontainers` integration tests
-      skip without Docker — never executed locally; they run in CI on
-      `ubuntu-latest`, which has a Docker daemon. CI workflow added, not yet
-      run.)*
+      dataset. *(`explain_benchmark.sql` seeds 150k rows and contrasts the
+      plan with `idx_orders_created_at` dropped. Run against the `db` service:
+      Index Only Scan, `shared hit=15`, `Heap Fetches: 0` with the index vs
+      Parallel Seq Scan, `shared hit=2235`, 73,560 rows filtered/worker without
+      it. README §3.1 numbers are from this run. `test_integration.py` also
+      asserts the plan names the index and has no `Seq Scan`.)*
+- [x] Unit, integration, and worker tests all pass locally and in CI with
+      0 linter and 0 typing errors. *(all 20 pass against real Postgres 16 via
+      `docker compose run --rm -e TEST_DATABASE_URL=... api pytest`; ruff 0,
+      mypy 0 in the built image. CI runs the same suite against a `postgres:16`
+      service.)*

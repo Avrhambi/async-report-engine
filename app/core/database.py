@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 from collections.abc import AsyncIterator
 
 from sqlalchemy import create_engine
@@ -8,7 +9,7 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
-from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
 from app.core.config import settings
 
@@ -26,10 +27,17 @@ async def get_db() -> AsyncIterator[AsyncSession]:
         yield session
 
 
-# --- Sync engine: used by Celery workers (psycopg) --------------------------
+# --- Sync engine: used only by Celery workers (psycopg) --------------------
 # INTENT.md only requires async on the API side; a sync worker avoids the
-# event-loop-in-prefork problem entirely.
-sync_engine = create_engine(
-    settings.SYNC_DATABASE_URL, echo=False, pool_pre_ping=True
-)
-SyncSessionLocal = sessionmaker(bind=sync_engine, expire_on_commit=False)
+# event-loop-in-prefork problem entirely. Built lazily so the API and the
+# test suite don't need psycopg installed.
+@functools.lru_cache(maxsize=1)
+def _sync_sessionmaker() -> sessionmaker[Session]:
+    sync_engine = create_engine(
+        settings.SYNC_DATABASE_URL, echo=False, pool_pre_ping=True
+    )
+    return sessionmaker(bind=sync_engine, expire_on_commit=False)
+
+
+def SyncSessionLocal() -> Session:  # noqa: N802 - session-factory naming
+    return _sync_sessionmaker()()

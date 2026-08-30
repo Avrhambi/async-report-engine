@@ -10,7 +10,6 @@ import datetime
 
 import structlog
 from celery import Task
-from celery.exceptions import MaxRetriesExceededError
 
 from app.core.database import SyncSessionLocal
 from app.repositories.sync_report_repo import SyncReportRepository
@@ -39,29 +38,32 @@ def _compute(task_id: str) -> None:
         logger.info("report_generated", task_id=task_id)
 
 
+def _dead_letter(task_id: str) -> None:
+    """Route a permanently failed job to DEAD_LETTER without crashing."""
+    with SyncSessionLocal() as session:
+        SyncReportRepository(session).set_status(task_id, "DEAD_LETTER")
+
+
+def run_generate_report(task: Task, task_id: str) -> None:
+    """Task body, separated from the decorator so it is directly testable."""
+    try:
+        _compute(task_id)
+    except Exception as exc:  # noqa: BLE001
+        retries = task.request.retries if task.request else 0
+        if retries >= (task.max_retries or 0):
+            logger.error("report_dead_letter", task_id=task_id, error=str(exc))
+            _dead_letter(task_id)
+            return
+        raise task.retry(exc=exc) from exc
+
+
 @celery_app.task(
     bind=True,
     name="app.workers.tasks.generate_report_task",
     max_retries=3,
-    autoretry_for=(Exception,),
     retry_backoff=True,
     retry_backoff_max=60,
     retry_jitter=False,
 )
 def generate_report_task(self: Task, task_id: str) -> None:
-    try:
-        _compute(task_id)
-    except MaxRetriesExceededError:
-        _dead_letter(task_id)
-    except Exception as exc:  # noqa: BLE001 - re-raised for autoretry
-        if self.request.retries >= self.max_retries:
-            logger.error("report_dead_letter", task_id=task_id, error=str(exc))
-            _dead_letter(task_id)
-            return
-        raise
-
-
-def _dead_letter(task_id: str) -> None:
-    """Route a permanently failed job to DEAD_LETTER without crashing."""
-    with SyncSessionLocal() as session:
-        SyncReportRepository(session).set_status(task_id, "DEAD_LETTER")
+    run_generate_report(self, task_id)

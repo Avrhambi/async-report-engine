@@ -1,8 +1,13 @@
 """Domain models. This layer imports nothing from other app/ layers."""
-import datetime
+from __future__ import annotations
 
-from sqlalchemy import Column, DateTime, Index, Numeric, String, text
+import datetime
+from decimal import Decimal
+from typing import Any
+
+from sqlalchemy import DateTime, Index, Numeric, String, text
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
 
@@ -14,13 +19,15 @@ def _utcnow() -> datetime.datetime:
 class Order(Base):
     __tablename__ = "orders"
 
-    id = Column(String, primary_key=True)
-    order_id = Column(String, unique=True, nullable=False)
-    customer_id = Column(String, nullable=False)
-    status = Column(String, nullable=False)
-    total_amount = Column(Numeric(14, 2), nullable=False)
-    region = Column(String, nullable=False)
-    created_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    order_id: Mapped[str] = mapped_column(String, unique=True)
+    customer_id: Mapped[str] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String)
+    total_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2))
+    region: Mapped[str] = mapped_column(String)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow
+    )
 
     __table_args__ = (
         Index("idx_orders_status_created_at", "status", text("created_at DESC")),
@@ -31,13 +38,15 @@ class Order(Base):
 class Report(Base):
     __tablename__ = "reports"
 
-    id = Column(String, primary_key=True)
-    task_id = Column(String, unique=True, nullable=False)
-    report_type = Column(String, nullable=False)
-    params = Column(JSONB, nullable=False, default=dict)
-    status = Column(String, nullable=False)
-    result = Column(JSONB, nullable=True)
-    created_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
-    updated_at = Column(
-        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    task_id: Mapped[str] = mapped_column(String, unique=True)
+    report_type: Mapped[str] = mapped_column(String)
+    params: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    status: Mapped[str] = mapped_column(String)
+    result: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow
+    )
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
     )

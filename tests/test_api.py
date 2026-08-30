@@ -1,49 +1,131 @@
+"""API-layer tests: input validation, error envelope, and route wiring
+(services mocked). Integration against a real DB lives in test_integration.py.
+"""
+from __future__ import annotations
+
+from unittest.mock import AsyncMock
+
 import pytest
-from unittest.mock import patch, AsyncMock
+from app.api import routes
+from app.domain.exceptions import ReportNotFoundError
+
+VALID_EVENT = {
+    "order_id": "ord_1001",
+    "customer_id": "cus_42",
+    "status": "paid",
+    "total_amount": 129.90,
+    "region": "EU",
+    "created_at": "2026-08-30T10:15:00Z",
+}
+
 
 def test_health_check(client):
-    response = client.get("/health")
-    assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+    resp = client.get("/health")
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok"}
 
-@patch("app.api.routes.TraceService.ingest_trace", new_callable=AsyncMock)
-def test_ingest_traces_batch(mock_ingest, client):
-    mock_ingest.return_value = {"status": "created", "trace_id": "123"}
-    
-    payload = {
-        "traces": [
-            {
-                "idempotency_key": "key1",
-                "prompt": "Hello",
-                "completion": "World",
-                "latency_ms": 150.5,
-                "token_usage": 10
+
+def test_events_batch_requires_idempotency_key(client):
+    resp = client.post("/api/v1/events/batch", json={"events": [VALID_EVENT]})
+    assert resp.status_code == 422
+    assert isinstance(resp.json()["detail"], list)
+
+
+def test_events_batch_rejects_negative_amount(client):
+    bad = {**VALID_EVENT, "total_amount": -5}
+    resp = client.post(
+        "/api/v1/events/batch",
+        json={"events": [bad]},
+        headers={"Idempotency-Key": "k1"},
+    )
+    assert resp.status_code == 422
+    body = resp.json()
+    assert body["detail"][0]["loc"][-1] == "total_amount"
+
+
+def test_events_batch_accepts_and_delegates(client, monkeypatch):
+    mock = AsyncMock(
+        return_value={"status": "accepted", "ingested": 1, "duplicates": 0}
+    )
+    monkeypatch.setattr(routes.IngestionService, "ingest_batch", mock)
+
+    resp = client.post(
+        "/api/v1/events/batch",
+        json={"events": [VALID_EVENT]},
+        headers={"Idempotency-Key": "k1"},
+    )
+    assert resp.status_code == 202
+    assert resp.json() == {"status": "accepted", "ingested": 1, "duplicates": 0}
+    assert mock.await_args.args[0] == "k1"
+
+
+def test_generate_report_returns_task_id(client, monkeypatch):
+    monkeypatch.setattr(
+        routes.ReportService,
+        "dispatch",
+        AsyncMock(return_value={"task_id": "rpt_abc123", "status": "PENDING"}),
+    )
+    resp = client.post(
+        "/api/v1/reports/generate",
+        json={
+            "report_type": "revenue_summary",
+            "date_from": "2026-08-01",
+            "date_to": "2026-08-31",
+            "group_by": ["region", "status"],
+        },
+    )
+    assert resp.status_code == 202
+    assert resp.json() == {"task_id": "rpt_abc123", "status": "PENDING"}
+
+
+def test_get_report_unknown_task_id_is_structured_404(client, monkeypatch):
+    monkeypatch.setattr(
+        routes.ReportService,
+        "get",
+        AsyncMock(side_effect=ReportNotFoundError("rpt_missing")),
+    )
+    resp = client.get("/api/v1/reports/rpt_missing")
+    assert resp.status_code == 404
+    assert isinstance(resp.json()["detail"], list)
+    assert resp.json()["detail"][0]["type"] == "error"
+
+
+def test_analytics_metrics_shape(client, monkeypatch):
+    monkeypatch.setattr(
+        routes.AnalyticsService,
+        "get_metrics",
+        AsyncMock(
+            return_value={
+                "window": "24h",
+                "revenue": 12043.10,
+                "order_count": 138,
+                "average_order_value": 87.27,
+                "orders_by_region": {"EU": 61, "US": 55, "APAC": 22},
             }
-        ]
-    }
-    
-    response = client.post("/api/v1/traces/batch", json=payload)
-    assert response.status_code == 202
-    assert response.json()["status"] == "accepted"
-    assert len(response.json()["results"]) == 1
+        ),
+    )
+    resp = client.get("/api/v1/analytics/metrics")
+    assert resp.status_code == 200
+    assert resp.json()["window"] == "24h"
+    assert resp.json()["orders_by_region"]["EU"] == 61
 
-@patch("app.api.routes.TraceService.trigger_evaluation", new_callable=AsyncMock)
-def test_run_evaluations(mock_trigger, client):
-    payload = {"trace_ids": ["123", "456"]}
-    response = client.post("/api/v1/evaluations/run", json=payload)
-    
-    assert response.status_code == 202
-    assert response.json()["status"] == "accepted"
-    mock_trigger.assert_called_once_with(["123", "456"])
 
-@patch("app.api.routes.AnalyticsService.get_model_performance", new_callable=AsyncMock)
-def test_get_model_performance(mock_get_perf, client):
-    mock_get_perf.return_value = {
-        "total_traces": 100,
-        "avg_latency_ms": 200.0,
-        "avg_token_usage": 50.0
-    }
-    
-    response = client.get("/api/v1/analytics/model-performance")
-    assert response.status_code == 200
-    assert response.json()["total_traces"] == 100
+@pytest.mark.asyncio
+async def test_ingestion_service_invalidates_cache_and_counts_duplicates(fake_redis):
+    from app.services.analytics_service import ANALYTICS_CACHE_KEY
+    from app.services.ingestion_service import IngestionService
+
+    fake_redis.store[ANALYTICS_CACHE_KEY] = "stale"
+    repo = AsyncMock()
+    repo.bulk_insert_ignore_duplicates.return_value = 2
+    svc = IngestionService(repo, fake_redis)
+
+    events = [VALID_EVENT, VALID_EVENT, VALID_EVENT]
+    result = await svc.ingest_batch("batch-1", events)
+
+    assert result == {"status": "accepted", "ingested": 2, "duplicates": 1}
+    assert ANALYTICS_CACHE_KEY not in fake_redis.store
+
+    # Full replay of the same key is a no-op.
+    replay = await svc.ingest_batch("batch-1", events)
+    assert replay == {"status": "accepted", "ingested": 0, "duplicates": 3}

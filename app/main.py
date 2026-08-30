@@ -27,9 +27,10 @@ async def _validation_error_handler(
 
 @app.exception_handler(HTTPException)
 async def _http_exception_handler(_: Request, exc: HTTPException) -> JSONResponse:
-    detail = exc.detail
-    if not isinstance(detail, list):
-        detail = [{"loc": [], "msg": str(detail), "type": "error"}]
+    if isinstance(exc.detail, list):
+        detail: list[object] = exc.detail
+    else:
+        detail = [{"loc": [], "msg": str(exc.detail), "type": "error"}]
     return JSONResponse(status_code=exc.status_code, content={"detail": detail})
 
 

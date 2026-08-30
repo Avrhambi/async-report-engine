@@ -1,110 +1,208 @@
-**TL;DR:** The Capstone project for Days 6–7 challenges you to build a production-grade, event-driven backend service from scratch using FastAPI, PostgreSQL (with verified query indexing), Redis caching, Celery with RabbitMQ, and automated Pytest test suites orchestrated via Docker Compose and GitHub Actions CI.
+# Asynchronous E-Commerce Report Engine
 
----
+> **Scope contract:** see [INTENT.md](./INTENT.md) — what this service must do and why.
+> **Original brief:** see [ASSIGNMENT.md](./ASSIGNMENT.md).
 
-# 🚀 Capstone Project Specification: Event-Driven Analytics & Report Processing Engine
+## 1. What it is
 
-## 1. Project Overview
+A backend service that ingests high volumes of e-commerce order events and
+generates heavy analytical reports **asynchronously**.
 
-Build a production-ready asynchronous backend service: an **Event Analytics & Asynchronous Report Aggregator Engine**. This service ingests high-volume telemetry/event payloads, processes heavy analytical aggregations asynchronously, caches frequent reads, and exposes structured query APIs with verified database index execution plans.
+- Ingestion is fast and does no computation — it validates and bulk-inserts.
+- Report generation is offloaded to background workers over a message queue,
+  so a heavy aggregation never blocks an HTTP request.
+- Dashboard reads are served from a Redis cache instead of being recomputed.
 
----
+It is self-contained: order events come from your own services, reports go to
+your own dashboards. No third-party services are called on the request or
+worker path.
 
-## 2. Technical Stack & Architecture
+## 2. Architecture
 
-| Component | Technology | Responsibility |
-| --- | --- | --- |
-| **API Framework** | **FastAPI** (Python 3.11+) | Async endpoints, Pydantic v2 schemas, Dependency Injection, Clean Architecture |
-| **Database** | **PostgreSQL 16** + **SQLAlchemy 2.0 (Async)** | ACID transactions, strict schema constraints, targeted B-Tree/Composite indexing |
-| **Cache Layer** | **Redis** | Cache-Aside pattern for hot analytical queries with TTL and cache invalidation |
-| **Message Broker & Workers** | **RabbitMQ** + **Celery** | Heavy background task processing, automated retries, Dead-Letter Queue (DLQ) |
-| **Testing Suite** | **Pytest** + **pytest-asyncio** + **Testcontainers / SQLite/PG test harness** | Unit, integration, and asynchronous E2E endpoint tests |
-| **DevOps & Observability** | **Docker Compose**, **Ruff**, **Mypy**, **GitHub Actions**, **structlog** | Multi-stage Docker builds, strict linting, type safety, structured logging |
-
----
-
-## 3. Core Requirements & Functional Capabilities
-
-### A. API Layer & Clean Architecture (FastAPI)
-
-* **Hexagonal / Clean Architecture Folder Structure:**
-```text
-app/
-├── api/              # Routers, schemas (Pydantic v2), request/response models
-├── core/             # Config (pydantic-settings), security, structured logger
-├── domain/           # Business logic, entities, domain exceptions
-├── repositories/     # Database access layer (SQLAlchemy async queries)
-├── services/         # Orchestration layer (connecting repositories, cache, workers)
-├── workers/          # Celery tasks and RabbitMQ configuration
-└── tests/            # Pytest test suite (fixtures, integration tests, unit tests)
+Clean Architecture — each layer only talks to the one below it:
 
 ```
+app/
+├── api/            # FastAPI routers + Pydantic request/response schemas (no logic, no SQL)
+├── core/           # config, database engine, Redis client, structured logger
+├── domain/         # SQLAlchemy models and domain exceptions (imports nothing from app/)
+├── repositories/   # the ONLY place SQLAlchemy queries are written
+├── services/       # orchestration: repositories + cache + workers
+└── workers/        # Celery tasks and broker configuration
+```
 
+**Request flow**
 
-* **Endpoints:**
-* `POST /api/v1/events/batch`: Ingests event batches asynchronously using FastAPI dependency-injected database sessions.
-* `POST /api/v1/reports/generate`: Dispatches background aggregation tasks to Celery/RabbitMQ, returning `202 Accepted` with a `task_id`.
-* `GET /api/v1/reports/{task_id}`: Polls task status and retrieves the generated analytical payload.
-* `GET /api/v1/analytics/metrics`: Fetches aggregated metrics with **Cache-Aside pattern via Redis** (reads from Redis first; falls back to DB and sets TTL).
+```
+POST /events/batch ──▶ API (validate + bulk insert) ──▶ Postgres          [fast, no compute]
 
+POST /reports/generate ──▶ API ──▶ RabbitMQ ──▶ Celery worker
+                                                   │ aggregate in SQL
+                                                   ▼
+                                               Postgres (reports table)
+                                                   │ retry w/ backoff, DLQ on permanent failure
 
+GET /reports/{task_id} ──▶ API ──▶ Postgres (poll status + result)
 
----
+GET /analytics/metrics ──▶ API ──▶ Redis (hit) │ Postgres (miss → cache w/ TTL)
+```
 
-### B. Database & Query Optimization (PostgreSQL)
+## 3. API Reference
 
-* **Schema Design:**
-* `events` table (e.g., `id`, `user_id`, `event_type`, `payload (JSONB)`, `created_at`).
-* `reports` table (e.g., `id`, `status`, `result_summary`, `created_at`, `updated_at`).
+Base path: `/api/v1`
 
+### `POST /api/v1/events/batch`
+Ingest a batch of order events. Validates, bulk-inserts, returns immediately.
+No computation.
 
-* **Indexing & EXPLAIN Verification:**
-* Define a composite index (e.g., `CREATE INDEX idx_events_type_created_at ON events (event_type, created_at DESC);`).
-* Include a dedicated SQL migration / verification script running `EXPLAIN (ANALYZE, BUFFERS)` to prove query plan shifts from `Seq Scan` to `Bitmap Index Scan` / `Index Only Scan`.
+**Headers**
 
+| Header | Required | Purpose |
+| --- | --- | --- |
+| `Idempotency-Key` | yes | Replaying a batch with the same key is a no-op (no duplicate rows). |
 
+**Request**
 
----
+```json
+{
+  "events": [
+    {
+      "order_id": "ord_1001",
+      "customer_id": "cus_42",
+      "status": "paid",
+      "total_amount": 129.90,
+      "region": "EU",
+      "created_at": "2026-08-30T10:15:00Z"
+    }
+  ]
+}
+```
 
-### C. Background Task Pipeline (Celery + RabbitMQ)
+**Response** — `202 Accepted`
 
-* **Asynchronous Processing:**
-* Celery worker calculates aggregation metrics (e.g., event frequency, breakdown by user/type) and stores the result in PostgreSQL.
+```json
+{ "status": "accepted", "ingested": 1, "duplicates": 0 }
+```
 
+### `POST /api/v1/reports/generate`
+Dispatch a background aggregation job. Returns a `task_id` to poll.
 
-* **Resilience & Fault Tolerance:**
-* Configured retry strategy with exponential backoff (`autoretry_for=(Exception,)`, `max_retries=3`).
-* Idempotency handling to ensure repeated executions with the same `task_id` do not create duplicate state or corrupt analytics.
+**Request**
 
+```json
+{
+  "report_type": "revenue_summary",
+  "date_from": "2026-08-01",
+  "date_to": "2026-08-31",
+  "group_by": ["region", "status"]
+}
+```
 
+**Response** — `202 Accepted`
 
----
+```json
+{ "task_id": "rpt_7f3a2c", "status": "PENDING" }
+```
 
-### D. Testing, Quality Assurance & CI/CD
+### `GET /api/v1/reports/{task_id}`
+Poll one report resource.
 
-* **Testing Suite (`pytest`):**
-* **Unit Tests:** Domain logic and schema validations.
-* **Integration Tests:** Async API endpoints with isolated test database instances (`pytest-asyncio`, `httpx.AsyncClient`).
-* **Worker Tests:** Mocked/eager Celery worker execution to verify task lifecycle (`SUCCESS`, `RETRY`, `FAILURE`).
+**Response** — `200 OK`
 
+```json
+{
+  "task_id": "rpt_7f3a2c",
+  "status": "SUCCESS",
+  "result": {
+    "total_revenue": 184230.55,
+    "order_count": 1920,
+    "average_order_value": 95.95,
+    "by_region": { "EU": 90120.00, "US": 71110.55, "APAC": 23000.00 },
+    "by_day": [ { "day": "2026-08-01", "revenue": 6011.20 } ],
+    "growth_vs_previous_period": 0.14
+  }
+}
+```
 
-* **CI Pipeline (`.github/workflows/ci.yml`):**
-* Automated execution of `ruff check`, `mypy --strict`, and `pytest` with code coverage reports on every push/PR.
+`status` transitions: `PENDING → STARTED → SUCCESS`, or `→ FAILURE`, or
+`→ DEAD_LETTER` (permanently failed after retries). `result` is `null` until
+`SUCCESS`.
 
+### `GET /api/v1/analytics/metrics`
+Rolling summary (default: last 24 hours). Cache-Aside: served from Redis on a
+hit; on a miss, aggregated from PostgreSQL and cached with a short TTL. The
+cache is invalidated when new events are ingested.
 
-* **Containerization:**
-* Production-grade **Multi-stage `Dockerfile**` (non-root user, minimal final image).
-* `docker-compose.yml` spinning up `web (FastAPI)`, `worker (Celery)`, `db (Postgres)`, `redis`, and `rabbitmq`.
+**Response** — `200 OK`
 
+```json
+{
+  "window": "24h",
+  "revenue": 12043.10,
+  "order_count": 138,
+  "average_order_value": 87.27,
+  "orders_by_region": { "EU": 61, "US": 55, "APAC": 22 }
+}
+```
 
+### Errors
+All endpoints return a consistent structure:
 
----
+```json
+{ "detail": [ { "loc": ["body", "events", 0, "total_amount"], "msg": "value must be >= 0", "type": "value_error" } ] }
+```
 
-## 4. Acceptance Criteria Checklist
+## 4. Database
 
-* [ ] `docker-compose up --build` starts the complete environment (`api`, `worker`, `postgres`, `redis`, `rabbitmq`) cleanly without race conditions.
-* [ ] Endpoints validate inputs via Pydantic v2 and return consistent structured error responses.
-* [ ] Redis caching layer reduces repeated query response latency on `/api/v1/analytics/metrics`.
-* [ ] Celery tasks reliably transition states (`PENDING` $\rightarrow$ `STARTED` $\rightarrow$ `SUCCESS`/`FAILURE`) and save results back to PostgreSQL.
-* [ ] A dedicated `explain_benchmark.sql` or test script validates the index performance using `EXPLAIN ANALYZE`.
-* [ ] All tests pass locally and in the GitHub Actions CI workflow with 0 linter (`ruff`) or typing (`mypy`) errors.
+**`orders`** — `id`, `order_id` (unique), `customer_id`, `status`,
+`total_amount`, `region`, `created_at`.
+
+**`reports`** — `id`, `task_id` (unique), `report_type`, `params` (JSONB),
+`status`, `result` (JSONB), `created_at`, `updated_at`.
+
+**Indexes** — composite indexes on `orders` matching the report/analytics
+query shape:
+
+```sql
+CREATE INDEX idx_orders_status_created_at ON orders (status, created_at DESC);
+CREATE INDEX idx_orders_region_created_at ON orders (region, created_at DESC);
+```
+
+## 5. Run locally
+
+```bash
+docker-compose up --build
+```
+
+Starts API (`:8000`), Celery worker, PostgreSQL, Redis, RabbitMQ. Services are
+healthcheck-gated and the schema is initialized before the API accepts traffic.
+
+- API docs: http://localhost:8000/docs
+- Health: http://localhost:8000/health
+
+## 6. Run the tests
+
+```bash
+docker-compose run --rm api pytest -v --cov=app tests/
+```
+
+- **Unit** — schema validation, report aggregation math.
+- **Integration** — API endpoints against an isolated test database
+  (`testcontainers`): ingestion, idempotency collision, cache hit/miss.
+- **Worker** — Celery in eager mode: state transitions, retry path, DLQ routing,
+  idempotent re-run.
+
+## 7. Run the index benchmark
+
+```bash
+docker-compose exec db psql -U user -d analytics_db -f /database_migrations/explain_benchmark.sql
+```
+
+Seeds a large synthetic `orders` dataset and runs `EXPLAIN ANALYZE` on the
+report query, showing the plan use an **Index Scan** rather than a
+**Sequential Scan**.
+
+## 8. Quality gates (CI)
+
+On every push / PR: `ruff` (lint) + `mypy` (types) + `pytest` (tests + coverage).
+Zero linter and zero typing errors required.

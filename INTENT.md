@@ -66,11 +66,14 @@ events are ingested.
   (via a retry or a duplicate dispatch) must not duplicate or corrupt the
   stored report. Because the computation is deterministic, a re-run overwrites
   with an identical result.
-- **Query optimization, proven.** A composite index on `orders`
-  (`(status, created_at DESC)` and/or `(region, created_at DESC)`) supports the
-  report and analytics queries. A dedicated benchmark script runs
+- **Query optimization, proven.** An index on `orders (created_at DESC)
+  INCLUDE (total_amount)` backs the report and analytics queries, whose
+  predicate is a `created_at` range followed by aggregation of `total_amount`;
+  composite indexes on `(status, created_at DESC)` and `(region, created_at
+  DESC)` back the `GROUP BY` breakdowns. A dedicated benchmark script runs
   `EXPLAIN ANALYZE` on a large synthetic dataset and demonstrates the query
-  plan shifting from a **Sequential Scan** to an **Index Scan**.
+  plan shifting from a **Sequential Scan** to an **index-based access path**
+  (Index Only Scan / Index Scan / Bitmap Index Scan) when the index is present.
 - **Containerization.** API, worker, PostgreSQL, Redis, and RabbitMQ all start
   cleanly with a single `docker-compose up --build`, healthcheck-gated, with
   the schema initialized before the first request — no race conditions.
@@ -102,10 +105,13 @@ events are ingested.
 - [x] Caching reduces repeated query latency on `/api/v1/analytics/metrics`;
       the cache is invalidated on ingestion. *(Cache-Aside in
       `AnalyticsService`; `IngestionService` deletes the key after insert.)*
-- [~] A benchmark script proves the composite index is used
-      (`EXPLAIN ANALYZE`: Seq Scan → Index Scan) on a large dataset.
-      *(`explain_benchmark.sql` seeds ~150k rows and contrasts the plan with
-      the index dropped; not yet run — no local Docker daemon.)*
+- [~] A benchmark script proves the `created_at` index is used
+      (`EXPLAIN ANALYZE`: Seq Scan → index-based access path) on a large
+      dataset. *(`explain_benchmark.sql` seeds ~150k rows and contrasts the
+      plan with `idx_orders_created_at` dropped; `test_integration.py` also
+      asserts the plan names the index and has no `Seq Scan`. Neither run
+      locally — no Docker daemon — but the integration suite executes in CI on
+      `ubuntu-latest`.)*
 - [~] Unit, integration, and worker tests all pass locally and in CI with
       0 linter and 0 typing errors. *(unit + worker: 14 pass, ruff 0, mypy 0
       on a local py3.10 venv. Integration (`testcontainers`) skips without

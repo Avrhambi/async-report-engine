@@ -30,6 +30,14 @@ class Order(Base):
     )
 
     __table_args__ = (
+        # Matches the report/analytics predicate (created_at range) and covers
+        # total_amount so the aggregates come from an Index Only Scan.
+        Index(
+            "idx_orders_created_at",
+            text("created_at DESC"),
+            postgresql_include=["total_amount"],
+        ),
+        # Kept to match INTENT.md's named contract and back the GROUP BY paths.
         Index("idx_orders_status_created_at", "status", text("created_at DESC")),
         Index("idx_orders_region_created_at", "region", text("created_at DESC")),
     )

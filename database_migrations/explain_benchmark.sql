@@ -1,11 +1,16 @@
 -- explain_benchmark.sql
--- Proves the composite index idx_orders_status_created_at is used for the
--- report query shape (filter on status, then a created_at range) instead of
--- a Sequential Scan.
+-- Proves the report/analytics queries use an index-based access path
+-- (Index Only Scan / Index Scan / Bitmap Index Scan) on idx_orders_created_at
+-- instead of a Sequential Scan over the whole orders table.
+--
+-- The query shape here is the one the application actually issues
+-- (SyncReportRepository.report_aggregates / OrderRepository.rolling_metrics):
+-- a created_at range filter, then aggregate total_amount. No status/region
+-- predicate -- those only appear in the GROUP BY breakdowns.
 --
 -- Run:  docker-compose exec db psql -U user -d analytics_db -f /database_migrations/explain_benchmark.sql
 
--- Seed a large synthetic dataset (~150k rows) if the table is small.
+-- Seed a large synthetic dataset (~150k rows over 90 days) if the table is small.
 INSERT INTO orders (id, order_id, customer_id, status, total_amount, region, created_at)
 SELECT
     gen_random_uuid()::varchar,
@@ -20,20 +25,22 @@ ON CONFLICT (order_id) DO NOTHING;
 
 ANALYZE orders;
 
--- Force a fair comparison: this query matches the composite index's leading
--- column (status) plus a created_at range.
+-- WITH the index: a ~2-day window out of 90 is ~2% of the table. The planner
+-- should pick an index path on idx_orders_created_at (Index Only Scan, since
+-- total_amount is INCLUDE'd).
 EXPLAIN (ANALYZE, BUFFERS)
 SELECT count(id), coalesce(sum(total_amount), 0), coalesce(avg(total_amount), 0)
 FROM orders
-WHERE status = 'paid'
-  AND created_at >= NOW() - interval '7 days';
+WHERE created_at >= NOW() - interval '2 days'
+  AND created_at <= NOW();
 
--- Contrast: with the index dropped, the same query falls back to a Seq Scan.
+-- Contrast: with the index dropped, the same query has no choice but a
+-- Sequential Scan over every row.
 BEGIN;
-DROP INDEX idx_orders_status_created_at;
+DROP INDEX idx_orders_created_at;
 EXPLAIN (ANALYZE, BUFFERS)
 SELECT count(id), coalesce(sum(total_amount), 0), coalesce(avg(total_amount), 0)
 FROM orders
-WHERE status = 'paid'
-  AND created_at >= NOW() - interval '7 days';
+WHERE created_at >= NOW() - interval '2 days'
+  AND created_at <= NOW();
 ROLLBACK;

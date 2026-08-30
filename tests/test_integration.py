@@ -14,13 +14,8 @@ testcontainers = pytest.importorskip("testcontainers.postgres")
 
 from app.domain.models import Base  # noqa: E402
 from app.repositories.sync_report_repo import SyncReportRepository  # noqa: E402
-from sqlalchemy import create_engine, text  # noqa: E402
+from sqlalchemy import create_engine  # noqa: E402
 from sqlalchemy.orm import Session, sessionmaker  # noqa: E402
-
-SCHEMA_INDEXES = (
-    "CREATE INDEX IF NOT EXISTS idx_orders_status_created_at "
-    "ON orders (status, created_at DESC);"
-)
 
 
 @pytest.fixture(scope="module")
@@ -33,10 +28,8 @@ def pg_session() -> Iterator[Session]:
 
     url = container.get_connection_url().replace("psycopg2", "psycopg")
     engine = create_engine(url)
+    # create_all emits the indexes declared in models.py __table_args__.
     Base.metadata.create_all(engine)
-    with engine.connect() as conn:
-        conn.execute(text(SCHEMA_INDEXES))
-        conn.commit()
 
     maker = sessionmaker(bind=engine, expire_on_commit=False)
     session = maker()
@@ -90,3 +83,37 @@ def test_rerun_produces_identical_output(pg_session: Session):
     repo = SyncReportRepository(pg_session)
     args = (datetime.date(2026, 8, 1), datetime.date(2026, 8, 31), ["region"])
     assert repo.report_aggregates(*args) == repo.report_aggregates(*args)
+
+
+def test_report_query_uses_created_at_index_not_seq_scan(pg_session: Session):
+    """The report predicate (created_at range + sum/avg total_amount) must use
+    an index-based access path, not a Sequential Scan over the heap."""
+    from sqlalchemy import text
+
+    pg_session.execute(
+        text(
+            "INSERT INTO orders "
+            "(id, order_id, customer_id, status, total_amount, region, created_at) "
+            "SELECT gen_random_uuid()::varchar, 'ord_idx_' || g, 'cus_1', 'paid', "
+            "round((random() * 100)::numeric, 2), 'EU', "
+            "NOW() - (random() * interval '90 days') "
+            "FROM generate_series(1, 20000) AS g "
+            "ON CONFLICT (order_id) DO NOTHING"
+        )
+    )
+    pg_session.execute(text("ANALYZE orders"))
+    pg_session.commit()
+
+    plan = "\n".join(
+        row[0]
+        for row in pg_session.execute(
+            text(
+                "EXPLAIN "
+                "SELECT count(id), coalesce(sum(total_amount), 0) FROM orders "
+                "WHERE created_at >= NOW() - interval '2 days' "
+                "AND created_at <= NOW()"
+            )
+        ).all()
+    )
+    assert "idx_orders_created_at" in plan
+    assert "Seq Scan" not in plan

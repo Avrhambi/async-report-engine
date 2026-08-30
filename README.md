@@ -160,10 +160,13 @@ All endpoints return a consistent structure:
 **`reports`** — `id`, `task_id` (unique), `report_type`, `params` (JSONB),
 `status`, `result` (JSONB), `created_at`, `updated_at`.
 
-**Indexes** — composite indexes on `orders` matching the report/analytics
-query shape:
+**Indexes** — the report/analytics queries filter `orders` by a `created_at`
+range and aggregate `total_amount`; the covering index answers that from an
+Index Only Scan. The composites back the `GROUP BY region` / `GROUP BY status`
+breakdowns:
 
 ```sql
+CREATE INDEX idx_orders_created_at ON orders (created_at DESC) INCLUDE (total_amount);
 CREATE INDEX idx_orders_status_created_at ON orders (status, created_at DESC);
 CREATE INDEX idx_orders_region_created_at ON orders (region, created_at DESC);
 ```
@@ -202,8 +205,10 @@ docker-compose exec db psql -U user -d analytics_db -f /database_migrations/expl
 ```
 
 Seeds a large synthetic `orders` dataset and runs `EXPLAIN ANALYZE` on the
-report query, showing the plan use an **Index Scan** rather than a
-**Sequential Scan**.
+report query (a `created_at` range aggregating `total_amount` — the shape the
+app actually issues), showing the plan use an **index-based access path** on
+`idx_orders_created_at` rather than a **Sequential Scan** once the index is
+dropped. `test_integration.py` asserts the same in CI.
 
 ## 8. Quality gates (CI)
 

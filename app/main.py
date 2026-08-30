@@ -6,6 +6,9 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from app.api.routes import router
+from app.core.logging import configure_logging
+
+configure_logging()
 
 app = FastAPI(
     title="Asynchronous E-Commerce Report Engine",

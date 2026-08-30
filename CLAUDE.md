@@ -7,7 +7,7 @@ This project strictly follows Clean Architecture principles:
 - **`app/repositories/`**: Database access layer. **Rule:** The only place where `SQLAlchemy` queries are executed.
 - **`app/domain/`**: Database models and domain exceptions. **Rule:** Must not import from other `app/` layers.
 - **`app/workers/`**: Celery tasks and configuration.
-- **`app/core/`**: Centralized configuration (`pydantic-settings`), DB setup, and Redis singletons.
+- **`app/core/`**: Centralized configuration (`pydantic-settings`), DB setup, Redis singletons, and structured-logging setup (`logging.py`).
 
 ## Tech Stack & Conventions
 - **Python**: 3.11+

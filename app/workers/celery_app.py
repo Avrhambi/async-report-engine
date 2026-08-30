@@ -1,6 +1,15 @@
 from celery import Celery
+from celery.signals import setup_logging
 
 from app.core.config import settings
+from app.core.logging import configure_logging
+
+
+@setup_logging.connect
+def _configure_structlog(**_kwargs: object) -> None:
+    """Keep Celery from installing its own root handler; use structlog JSON."""
+    configure_logging()
+
 
 celery_app = Celery(
     "async_report_engine",

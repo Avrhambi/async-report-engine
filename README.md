@@ -24,7 +24,7 @@ Clean Architecture — each layer only talks to the one below it:
 ```
 app/
 ├── api/            # FastAPI routers + Pydantic request/response schemas (no logic, no SQL)
-├── core/           # config, database engine, Redis client, structured logger
+├── core/           # config, database engines, Redis client, structured logging (logging.py: JSON output, shared by API + worker)
 ├── domain/         # SQLAlchemy models and domain exceptions (imports nothing from app/)
 ├── repositories/   # the ONLY place SQLAlchemy queries are written
 ├── services/       # orchestration: repositories + cache + workers

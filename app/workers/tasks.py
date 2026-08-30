@@ -8,14 +8,14 @@ from __future__ import annotations
 
 import datetime
 
-import structlog
 from celery import Task
 
 from app.core.database import SyncSessionLocal
+from app.core.logging import get_logger
 from app.repositories.sync_report_repo import SyncReportRepository
 from app.workers.celery_app import celery_app
 
-logger = structlog.get_logger()
+logger = get_logger(__name__)
 
 
 def _compute(task_id: str) -> None:

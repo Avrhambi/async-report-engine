@@ -17,15 +17,14 @@ Redis · pytest + Testcontainers · CI: ruff + mypy + pytest (zero lint / zero t
 
 ```mermaid
 flowchart LR
-    Client([Client / Dashboard]) <-->|POST /events/batch| API[FastAPI Gateway]
-    Client <-->|POST /reports/generate| API
-    Client <-->|GET /reports/task_id| API
-    Client <-->|GET /analytics/metrics| API
+    Client([Client / Dashboard])
+
+    Client <-->|"POST /events/batch<br/>POST /reports/generate<br/>GET /reports/{task_id}<br/>GET /analytics/metrics"| API[FastAPI Gateway]
 
     API -->|1. Bulk Insert| DB[(PostgreSQL 16)]
     API -->|2. Dispatch Job| RMQ[RabbitMQ Broker]
     API <-->|Cache-Aside read / populate-on-miss| REDIS[(Redis Cache)]
-    API <-->|Read on cache miss: report status, metrics| DB
+    API <-->|Read on cache miss:<br/>report status, metrics| DB
 
     RMQ -->|Consume Task| WORKER[Celery Worker]
     WORKER -->|Heavy Aggregation SQL| DB

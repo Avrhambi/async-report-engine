@@ -78,22 +78,35 @@ events are ingested.
 ## Acceptance Criteria Checklist
 (Mirrors `ASSIGNMENT.md` — every item there maps to one here.)
 
-- [ ] `docker-compose up --build` starts API, worker, database, cache, and
-      broker cleanly without race conditions.
-- [ ] Endpoints validate inputs strictly and return consistent structured error
-      responses.
-- [ ] `POST /api/v1/events/batch` persists batches with low latency and no
+- [~] `docker-compose up --build` starts API, worker, database, cache, and
+      broker cleanly without race conditions. *(compose + healthcheck-gated
+      deps + `/docker-entrypoint-initdb.d` schema mount written; not yet run —
+      no local Docker daemon.)*
+- [x] Endpoints validate inputs strictly and return consistent structured error
+      responses. *(Pydantic v2 + `RequestValidationError`/`HTTPException`
+      handlers normalising to `{"detail": [...]}`.)*
+- [x] `POST /api/v1/events/batch` persists batches with low latency and no
       on-the-fly computation; duplicate `Idempotency-Key` is a no-op.
-- [ ] `POST /api/v1/reports/generate` returns `202` + `task_id`;
+      *(single `INSERT ... ON CONFLICT (order_id) DO NOTHING RETURNING`;
+      batch-level replay short-circuits via a Redis marker.)*
+- [x] `POST /api/v1/reports/generate` returns `202` + `task_id`;
       `GET /api/v1/reports/{task_id}` reports lifecycle states and returns the
-      generated payload on success.
-- [ ] Background report jobs reliably transition states and save results back to
-      the database; a retry produces an identical result.
-- [ ] Permanently failed jobs are routed to a Dead-Letter Queue; the worker
-      keeps running.
-- [ ] Caching reduces repeated query latency on `/api/v1/analytics/metrics`;
-      the cache is invalidated on ingestion.
-- [ ] A benchmark script proves the composite index is used
+      generated payload on success. *(API-generated `rpt_*` id; PENDING row
+      written before dispatch.)*
+- [x] Background report jobs reliably transition states and save results back to
+      the database; a retry produces an identical result. *(deterministic SQL
+      aggregation; `save_result` is an idempotent upsert keyed on `task_id`.)*
+- [x] Permanently failed jobs are routed to a Dead-Letter Queue; the worker
+      keeps running. *(`ReportTask.on_failure` → `DEAD_LETTER`;
+      `on_retry` → `FAILURE`.)*
+- [x] Caching reduces repeated query latency on `/api/v1/analytics/metrics`;
+      the cache is invalidated on ingestion. *(Cache-Aside in
+      `AnalyticsService`; `IngestionService` deletes the key after insert.)*
+- [~] A benchmark script proves the composite index is used
       (`EXPLAIN ANALYZE`: Seq Scan → Index Scan) on a large dataset.
-- [ ] Unit, integration, and worker tests all pass locally and in CI with
-      0 linter and 0 typing errors.
+      *(`explain_benchmark.sql` seeds ~150k rows and contrasts the plan with
+      the index dropped; not yet run — no local Docker daemon.)*
+- [~] Unit, integration, and worker tests all pass locally and in CI with
+      0 linter and 0 typing errors. *(unit + worker: 14 pass, ruff 0, mypy 0
+      on a local py3.10 venv. Integration (`testcontainers`) skips without
+      Docker — never executed. CI workflow added, not yet run.)*

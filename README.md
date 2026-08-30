@@ -20,7 +20,7 @@ flowchart TD
     Client(["Client / Dashboard"]) <-->|"POST /events/batch"| API["FastAPI Gateway"]
     Client <-->|"POST /reports/generate"| API
     Client <-->|"GET /reports/{task_id}"| API
-    Client <---->|"GET /analytics/metrics"| API
+    Client <--->|"GET /analytics/metrics"| API
 
     API -->|"1. Bulk Insert"| DB[("PostgreSQL 16")]
     API -->|"2. Dispatch Job"| RMQ["RabbitMQ Broker"]

@@ -3,217 +3,250 @@
 > **Scope contract:** see [INTENT.md](./INTENT.md) — what this service must do and why.
 > **Original brief:** see [ASSIGNMENT.md](./ASSIGNMENT.md).
 
-## 1. What it is
+A backend service that ingests high-volume e-commerce order events and produces heavy
+analytical reports **without ever blocking an HTTP request**. Ingestion validates and
+bulk-inserts only; report generation runs on separate worker processes over a message
+queue; dashboard reads are served from Redis.
 
-A backend service that ingests high volumes of e-commerce order events and
-generates heavy analytical reports **asynchronously**.
+**Stack:** FastAPI (async) · PostgreSQL 16 (async SQLAlchemy 2.0) · Celery + RabbitMQ ·
+Redis · pytest + Testcontainers · CI: ruff + mypy + pytest (zero lint / zero type errors).
 
-- Ingestion is fast and does no computation — it validates and bulk-inserts.
-- Report generation is offloaded to background workers over a message queue,
-  so a heavy aggregation never blocks an HTTP request.
-- Dashboard reads are served from a Redis cache instead of being recomputed.
+---
 
-It is self-contained: order events come from your own services, reports go to
-your own dashboards. No third-party services are called on the request or
-worker path.
+## 1. System overview
 
-## 2. Architecture
+```mermaid
+flowchart TD
+    Client([Client / Dashboard]) -->|POST /events/batch| API[FastAPI Gateway]
+    Client -->|POST /reports/generate| API
+    Client -->|GET /analytics/metrics| API
 
-Clean Architecture — each layer only talks to the one below it:
+    API -->|1. Bulk Insert| DB[(PostgreSQL 16)]
+    API -->|2. Dispatch Job| RMQ[RabbitMQ Broker]
+    API <-->|Cache-Aside| REDIS[(Redis Cache)]
 
-```
-app/
-├── api/            # FastAPI routers + Pydantic request/response schemas (no logic, no SQL)
-├── core/           # config, database engines, Redis client, structured logging (logging.py: JSON output, shared by API + worker)
-├── domain/         # SQLAlchemy models and domain exceptions (imports nothing from app/)
-├── repositories/   # the ONLY place SQLAlchemy queries are written
-├── services/       # orchestration: repositories + cache + workers
-└── workers/        # Celery tasks and broker configuration
-```
-
-**Request flow**
-
-```
-POST /events/batch ──▶ API (validate + bulk insert) ──▶ Postgres          [fast, no compute]
-
-POST /reports/generate ──▶ API ──▶ RabbitMQ ──▶ Celery worker
-                                                   │ aggregate in SQL
-                                                   ▼
-                                               Postgres (reports table)
-                                                   │ retry w/ backoff, DLQ on permanent failure
-
-GET /reports/{task_id} ──▶ API ──▶ Postgres (poll status + result)
-
-GET /analytics/metrics ──▶ API ──▶ Redis (hit) │ Postgres (miss → cache w/ TTL)
+    RMQ -->|Consume Task| WORKER[Celery Worker]
+    WORKER -->|Heavy Aggregation SQL| DB
+    WORKER -->|Store Output| DB
+    WORKER -.->|On 3x Failure| DLQ[Dead Letter Queue]
 ```
 
-## 3. API Reference
+**Clean Architecture** — each layer only talks to the one below it:
 
-Base path: `/api/v1`
-
-### `POST /api/v1/events/batch`
-Ingest a batch of order events. Validates, bulk-inserts, returns immediately.
-No computation.
-
-**Headers**
-
-| Header | Required | Purpose |
+| Layer | Responsibility | Rule |
 | --- | --- | --- |
-| `Idempotency-Key` | yes | Replaying a batch with the same key is a no-op (no duplicate rows). |
+| `app/api/` | FastAPI routers + Pydantic schemas | No logic, no SQL — delegate to services |
+| `app/services/` | Orchestration: repositories + cache + workers | The only layer that wires components together |
+| `app/repositories/` | Database access | The only place SQLAlchemy queries are written |
+| `app/domain/` | SQLAlchemy models, domain exceptions | Imports nothing from `app/` |
+| `app/workers/` | Celery tasks + broker config | Heavy compute lives here, not in the API |
+| `app/core/` | Config, DB engines, Redis client, structured logging | Shared by API and worker |
 
-**Request**
+---
 
-```json
-{
-  "events": [
-    {
-      "order_id": "ord_1001",
-      "customer_id": "cus_42",
-      "status": "paid",
-      "total_amount": 129.90,
-      "region": "EU",
-      "created_at": "2026-08-30T10:15:00Z"
-    }
-  ]
-}
-```
+## 2. Engineering trade-offs & decisions
 
-**Response** — `202 Accepted`
+The core design question is *"how do you run an expensive aggregation without degrading
+the ingestion path?"* Every decision below follows from that.
 
-```json
-{ "status": "accepted", "ingested": 1, "duplicates": 0 }
-```
+| Decision | Chosen | Rejected alternative | Why |
+| --- | --- | --- | --- |
+| Background execution | **Celery + RabbitMQ** | FastAPI `BackgroundTasks` | `BackgroundTasks` run in the API process — a heavy aggregation would compete with the event loop and die with the pod on redeploy. Celery workers are separate processes in separate containers, scale independently, and survive an API restart. |
+| Broker | **RabbitMQ** | Redis Pub/Sub / Redis lists | Pub/Sub drops messages with no consumer online — unacceptable for a report job. RabbitMQ gives durable queues, per-message acknowledgement, and native dead-letter routing. Redis stays dedicated to the cache so a queue backlog can't evict cache entries. |
+| `created_at` index | **B-Tree** `INCLUDE (total_amount)` | Hash index | Reports filter a **date range** (`created_at BETWEEN …`). Hash indexes only serve equality. The B-Tree also supports an Index Only Scan for `count/sum/avg` because `total_amount` is in the leaf. |
+| Ingestion write | **Single bulk `INSERT`** | Row-by-row ORM inserts | One round trip and one transaction for the whole batch; keeps `POST /events/batch` in the low-milliseconds range regardless of batch size. |
+| Dashboard reads | **Cache-Aside (Redis)** | Read replica / materialized view | The metrics window is small and hot; a TTL'd cache entry absorbs the repeated dashboard polls with no extra infrastructure, and is invalidated on ingest. |
+| Idempotency | **`Idempotency-Key` → hash in Redis, TTL** | DB unique constraint only | Stops a retried batch before it touches Postgres; the `order_id` unique constraint is the backstop for anything that slips through. |
 
-### `POST /api/v1/reports/generate`
-Dispatch a background aggregation job. Returns a `task_id` to poll.
+### Edge cases handled
 
-**Request**
+- **Duplicate ingestion under retry** — replaying a batch with the same `Idempotency-Key`
+  is a no-op; `duplicates` is reported back in the response.
+- **Reversed date range** — `date_from > date_to` is rejected at the schema layer with the
+  structured error envelope, before any work is scheduled.
+- **Permanently failing job** — a task that fails 3 consecutive times (`autoretry_for`,
+  exponential backoff) is routed to a `DEAD_LETTER` state via the task's `on_failure`
+  handler instead of blocking the main queue. The report resource reflects
+  `status = DEAD_LETTER` so the client stops polling.
+- **Cold cache / stale cache** — a miss recomputes from Postgres and repopulates; ingest
+  invalidates the key so the next read is fresh.
 
-```json
-{
-  "report_type": "revenue_summary",
-  "date_from": "2026-08-01",
-  "date_to": "2026-08-31",
-  "group_by": ["region", "status"]
-}
-```
+---
 
-**Response** — `202 Accepted`
+## 3. Data-backed verification
 
-```json
-{ "task_id": "rpt_7f3a2c", "status": "PENDING" }
-```
+### 3.1 Index performance (`database_migrations/explain_benchmark.sql`)
 
-### `GET /api/v1/reports/{task_id}`
-Poll one report resource.
+The script seeds a large synthetic `orders` dataset (`created_at` correlated with insert
+order — a realistic append-only events table), runs `VACUUM ANALYZE`, then runs
+`EXPLAIN (ANALYZE, BUFFERS)` on the exact query the app issues (a `created_at` range
+aggregating `total_amount`), first **with** `idx_orders_created_at` and then **with it
+dropped**.
 
-**Response** — `200 OK`
+**Claim proven:** the range aggregation resolves through an index-based access path on
+`idx_orders_created_at` (an *Index Only Scan* once the visibility map is set by `VACUUM`),
+reading a handful of index pages instead of the whole heap. Dropping the index forces a
+**Sequential Scan** over the full table for the same result.
 
-```json
-{
-  "task_id": "rpt_7f3a2c",
-  "status": "SUCCESS",
-  "result": {
-    "total_revenue": 184230.55,
-    "order_count": 1920,
-    "average_order_value": 95.95,
-    "by_region": { "EU": 90120.00, "US": 71110.55, "APAC": 23000.00 },
-    "by_day": [ { "day": "2026-08-01", "revenue": 6011.20 } ],
-    "growth_vs_previous_period": 0.14
-  }
-}
-```
+Representative shape of the two plans (absolute times vary by hardware — run the script
+to get your own):
 
-`status` transitions: `PENDING → STARTED → SUCCESS`, or `→ FAILURE`, or
-`→ DEAD_LETTER` (permanently failed after retries). `result` is `null` until
-`SUCCESS`.
+| | Access path | Heap access | Relative cost |
+| --- | --- | --- | --- |
+| **With covering index** | `Index Only Scan` on `idx_orders_created_at` | zero heap fetches (visibility map synced) | reads ≈ the matched range only |
+| **Without index** | `Seq Scan` on `orders` | full table | reads every row to answer a ~2% window |
 
-### `GET /api/v1/analytics/metrics`
-Rolling summary (default: last 24 hours). Cache-Aside: served from Redis on a
-hit; on a miss, aggregated from PostgreSQL and cached with a short TTL. The
-cache is invalidated when new events are ingested.
-
-**Response** — `200 OK`
-
-```json
-{
-  "window": "24h",
-  "revenue": 12043.10,
-  "order_count": 138,
-  "average_order_value": 87.27,
-  "orders_by_region": { "EU": 61, "US": 55, "APAC": 22 }
-}
-```
-
-### Errors
-All endpoints return a consistent structure:
-
-```json
-{ "detail": [ { "loc": ["body", "events", 0, "total_amount"], "msg": "value must be >= 0", "type": "value_error" } ] }
-```
-
-## 4. Database
-
-**`orders`** — `id`, `order_id` (unique), `customer_id`, `status`,
-`total_amount`, `region`, `created_at`.
-
-**`reports`** — `id`, `task_id` (unique), `report_type`, `params` (JSONB),
-`status`, `result` (JSONB), `created_at`, `updated_at`.
-
-**Indexes** — the report/analytics queries filter `orders` by a `created_at`
-range and aggregate `total_amount` (via `count(*)` / `sum` / `avg`, so no
-column falls outside the index); the covering index answers that from an Index
-Only Scan once the table's visibility map is set (autovacuum in production;
-`VACUUM ANALYZE` in the benchmark), an Index Scan otherwise. The composites
-back the `GROUP BY region` / `GROUP BY status` breakdowns:
-
-```sql
-CREATE INDEX idx_orders_created_at ON orders (created_at DESC) INCLUDE (total_amount);
-CREATE INDEX idx_orders_status_created_at ON orders (status, created_at DESC);
-CREATE INDEX idx_orders_region_created_at ON orders (region, created_at DESC);
-```
-
-## 5. Run locally
-
-```bash
-docker-compose up --build
-```
-
-Starts API (`:8000`), Celery worker, PostgreSQL, Redis, RabbitMQ. Services are
-healthcheck-gated and the schema is initialized before the API accepts traffic.
-
-- API docs: http://localhost:8000/docs
-- Health: http://localhost:8000/health
-
-## 6. Run the tests
-
-```bash
-docker-compose run --rm api pytest -v --cov=app tests/
-```
-
-- **Unit** (`test_api.py`) — schema validation (including reversed date
-  ranges), the structured-error envelope, route delegation, and the ingestion
-  service's idempotency + cache invalidation, all with the DB and Redis mocked.
-- **Logging** (`test_logging.py`) — `app.core.logging` emits JSON and
-  configures idempotently.
-- **Integration** (`test_integration.py`) — report aggregation SQL and the
-  `idx_orders_created_at` query plan against a real PostgreSQL 16 via
-  `testcontainers`. Skipped automatically when no Docker daemon is reachable;
-  runs in CI.
-- **Worker** (`test_workers.py`) — state transitions, deterministic re-run,
-  and `DEAD_LETTER` routing via the task's `on_failure` handler.
-
-## 7. Run the index benchmark
+`test_integration.py` asserts this plan difference in CI against a real PostgreSQL 16.
 
 ```bash
 docker-compose exec db psql -U user -d analytics_db -f /database_migrations/explain_benchmark.sql
 ```
 
-Seeds a large synthetic `orders` dataset and runs `EXPLAIN ANALYZE` on the
-report query (a `created_at` range aggregating `total_amount` — the shape the
-app actually issues), showing the plan use an **index-based access path** on
-`idx_orders_created_at` rather than a **Sequential Scan** once the index is
-dropped. `test_integration.py` asserts the same in CI.
+### 3.2 Cache-Aside effectiveness
+
+`GET /analytics/metrics` on a hit returns straight from Redis with no Postgres round trip
+and no aggregation. On a miss it runs one indexed range query, writes the result to Redis
+with a short TTL, and returns. Ingestion deletes the key, so a dashboard never shows a
+window that predates the latest batch.
+
+---
+
+## 4. Resilience & production readiness
+
+| Concern | Mechanism |
+| --- | --- |
+| **Duplicate work** | `Idempotency-Key` (Redis, TTL) on ingestion + `order_id` unique constraint |
+| **Transient task failure** | `autoretry_for=(Exception,)`, exponential backoff |
+| **Permanent task failure** | 3 failures → `DEAD_LETTER` state via `on_failure`; main queue keeps draining |
+| **Slow dependency at startup** | Compose services are healthcheck-gated; schema initialized before the API accepts traffic |
+| **Observability** | `app.core.logging` — single JSON formatter shared by API and worker; configures idempotently (tested) |
+| **Regression safety** | ruff + mypy + pytest on every push/PR; integration + query-plan tests via Testcontainers |
+
+---
+
+## 5. API reference
+
+Base path: `/api/v1`
+
+### `POST /events/batch` → `202`
+Ingest a batch of order events. Validates, bulk-inserts, returns immediately — no compute.
+
+| Header | Required | Purpose |
+| --- | --- | --- |
+| `Idempotency-Key` | yes | Replaying a batch with the same key is a no-op (no duplicate rows). |
+
+```json
+// request
+{ "events": [ {
+  "order_id": "ord_1001", "customer_id": "cus_42", "status": "paid",
+  "total_amount": 129.90, "region": "EU", "created_at": "2026-08-30T10:15:00Z"
+} ] }
+// response
+{ "status": "accepted", "ingested": 1, "duplicates": 0 }
+```
+
+### `POST /reports/generate` → `202`
+Dispatch a background aggregation job. Returns a `task_id` to poll.
+
+```json
+// request
+{ "report_type": "revenue_summary", "date_from": "2026-08-01",
+  "date_to": "2026-08-31", "group_by": ["region", "status"] }
+// response
+{ "task_id": "rpt_7f3a2c", "status": "PENDING" }
+```
+
+### `GET /reports/{task_id}` → `200`
+Poll one report resource.
+
+```json
+{ "task_id": "rpt_7f3a2c", "status": "SUCCESS", "result": {
+  "total_revenue": 184230.55, "order_count": 1920, "average_order_value": 95.95,
+  "by_region": { "EU": 90120.00, "US": 71110.55, "APAC": 23000.00 },
+  "by_day": [ { "day": "2026-08-01", "revenue": 6011.20 } ],
+  "growth_vs_previous_period": 0.14
+} }
+```
+
+`status`: `PENDING → STARTED → SUCCESS`, or `→ FAILURE`, or `→ DEAD_LETTER` (permanently
+failed after retries). `result` is `null` until `SUCCESS`.
+
+### `GET /analytics/metrics` → `200`
+Rolling summary (default: last 24h). Cache-Aside: Redis on a hit; on a miss, aggregated
+from PostgreSQL and cached with a short TTL. Invalidated when new events are ingested.
+
+```json
+{ "window": "24h", "revenue": 12043.10, "order_count": 138,
+  "average_order_value": 87.27, "orders_by_region": { "EU": 61, "US": 55, "APAC": 22 } }
+```
+
+### Errors
+Consistent structure across all endpoints:
+
+```json
+{ "detail": [ { "loc": ["body", "events", 0, "total_amount"], "msg": "value must be >= 0", "type": "value_error" } ] }
+```
+
+---
+
+## 6. Database
+
+**`orders`** — `id`, `order_id` (unique), `customer_id`, `status`, `total_amount`,
+`region`, `created_at`.
+
+**`reports`** — `id`, `task_id` (unique), `report_type`, `params` (JSONB), `status`,
+`result` (JSONB), `created_at`, `updated_at`.
+
+**Indexes** — the report/analytics queries filter `orders` by a `created_at` range and
+aggregate `total_amount` via `count(*)` / `sum` / `avg` (no column outside the index), so
+the covering index answers from an Index Only Scan once the visibility map is set
+(autovacuum in production; `VACUUM ANALYZE` in the benchmark), an Index Scan otherwise.
+The composites back the `GROUP BY region` / `GROUP BY status` breakdowns:
+
+```sql
+CREATE INDEX idx_orders_created_at        ON orders (created_at DESC) INCLUDE (total_amount);
+CREATE INDEX idx_orders_status_created_at ON orders (status, created_at DESC);
+CREATE INDEX idx_orders_region_created_at ON orders (region, created_at DESC);
+```
+
+---
+
+## 7. Run it
+
+```bash
+docker-compose up --build          # API :8000, Celery worker, PostgreSQL, Redis, RabbitMQ
+```
+
+Services are healthcheck-gated; the schema is initialized before the API accepts traffic.
+
+- API docs: http://localhost:8000/docs
+- Health: http://localhost:8000/health
+
+### Tests
+
+```bash
+docker-compose run --rm api pytest -v --cov=app tests/
+```
+
+- **Unit** (`test_api.py`) — schema validation (incl. reversed date ranges), the
+  structured-error envelope, route delegation, and the ingestion service's idempotency +
+  cache invalidation, with DB and Redis mocked.
+- **Logging** (`test_logging.py`) — `app.core.logging` emits JSON and configures idempotently.
+- **Integration** (`test_integration.py`) — report aggregation SQL and the
+  `idx_orders_created_at` query plan against a real PostgreSQL 16 via Testcontainers.
+  Skipped when no Docker daemon is reachable; runs in CI.
+- **Worker** (`test_workers.py`) — state transitions, deterministic re-run, and
+  `DEAD_LETTER` routing via the task's `on_failure` handler.
+
+### Index benchmark
+
+```bash
+docker-compose exec db psql -U user -d analytics_db -f /database_migrations/explain_benchmark.sql
+```
+
+See [§3.1](#31-index-performance-database_migrationsexplain_benchmarksql).
+
+---
 
 ## 8. Quality gates (CI)
 

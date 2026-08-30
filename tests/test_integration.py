@@ -90,13 +90,19 @@ def test_report_query_uses_created_at_index_not_seq_scan(pg_session: Session):
     an index-based access path, not a Sequential Scan over the heap."""
     from sqlalchemy import text
 
+    # created_at is seeded monotonically (5-min steps back from a fixed
+    # anchor), so it is physically correlated with insert order and a narrow
+    # range maps to a handful of heap pages -- the planner picks the index
+    # even on a small table with the visibility map unset (no VACUUM here).
+    # The window is anchored in 2027 so it can't perturb the Aug-2026
+    # aggregation assertions in the tests above (module-scoped session).
     pg_session.execute(
         text(
             "INSERT INTO orders "
             "(id, order_id, customer_id, status, total_amount, region, created_at) "
             "SELECT gen_random_uuid()::varchar, 'ord_idx_' || g, 'cus_1', 'paid', "
             "round((random() * 100)::numeric, 2), 'EU', "
-            "NOW() - (random() * interval '90 days') "
+            "TIMESTAMPTZ '2027-06-01 00:00:00+00' - (g * interval '5 minutes') "
             "FROM generate_series(1, 20000) AS g "
             "ON CONFLICT (order_id) DO NOTHING"
         )
@@ -110,8 +116,8 @@ def test_report_query_uses_created_at_index_not_seq_scan(pg_session: Session):
             text(
                 "EXPLAIN "
                 "SELECT count(id), coalesce(sum(total_amount), 0) FROM orders "
-                "WHERE created_at >= NOW() - interval '2 days' "
-                "AND created_at <= NOW()"
+                "WHERE created_at >= TIMESTAMPTZ '2027-05-30 00:00:00+00' "
+                "AND created_at <= TIMESTAMPTZ '2027-06-01 00:00:00+00'"
             )
         ).all()
     )

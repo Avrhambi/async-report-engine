@@ -15,7 +15,10 @@ services:
       - ./database_migrations/init:/docker-entrypoint-initdb.d:ro
       - ./database_migrations:/database_migrations:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U user -d analytics_db"]
+      # -h 127.0.0.1 forces the check against the real TCP listener. Without
+      # it, socket-based pg_isready can pass while /docker-entrypoint-initdb.d
+      # (001_initial_schema.sql) is still running against the temporary server.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U user -d analytics_db"]
       interval: 5s
       timeout: 5s
       retries: 10

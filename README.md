@@ -44,7 +44,14 @@ flowchart TD
 
 ---
 
-## 2. Engineering trade-offs & decisions
+## 2. Run it
+
+```bash
+docker-compose up --build          # API :8000, Celery worker, PostgreSQL, Redis, RabbitMQ
+```
+
+
+## 3. Engineering trade-offs & decisions
 
 The core design question is *"how do you run an expensive aggregation without degrading
 the ingestion path?"* Every decision below follows from that.
@@ -73,9 +80,9 @@ the ingestion path?"* Every decision below follows from that.
 
 ---
 
-## 3. Data-backed verification
+## 4. Data-backed verification
 
-### 3.1 Index performance (`database_migrations/explain_benchmark.sql`)
+### 4.1 Index performance (`database_migrations/explain_benchmark.sql`)
 
 The script seeds a large synthetic `orders` dataset (`created_at` correlated with insert
 order — a realistic append-only events table), runs `VACUUM ANALYZE`, then runs
@@ -117,7 +124,7 @@ daemon is reachable.
 docker-compose exec -T db psql -U user -d analytics_db < database_migrations/explain_benchmark.sql
 ```
 
-### 3.2 Cache-Aside effectiveness
+### 4.2 Cache-Aside effectiveness
 
 `GET /analytics/metrics` on a hit returns straight from Redis with no Postgres round trip
 and no aggregation. On a miss it runs one indexed range query, writes the result to Redis
@@ -126,7 +133,7 @@ window that predates the latest batch.
 
 ---
 
-## 4. Resilience & production readiness
+## 5. Resilience & production readiness
 
 | Concern | Mechanism |
 | --- | --- |
@@ -139,7 +146,7 @@ window that predates the latest batch.
 
 ---
 
-## 5. API reference
+## 6. API reference
 
 Base path: `/api/v1`
 
@@ -204,7 +211,7 @@ Consistent structure across all endpoints:
 
 ---
 
-## 6. Database
+## 7. Database
 
 **`orders`** — `id`, `order_id` (unique), `customer_id`, `status`, `total_amount`,
 `region`, `created_at`.
@@ -224,13 +231,6 @@ CREATE INDEX idx_orders_status_created_at ON orders (status, created_at DESC);
 CREATE INDEX idx_orders_region_created_at ON orders (region, created_at DESC);
 ```
 
----
-
-## 7. Run it
-
-```bash
-docker-compose up --build          # API :8000, Celery worker, PostgreSQL, Redis, RabbitMQ
-```
 
 Services are healthcheck-gated; the schema is initialized before the API accepts traffic.
 
@@ -268,11 +268,11 @@ docker-compose run --rm api pytest -v --cov=app tests/
 docker-compose exec -T db psql -U user -d analytics_db < database_migrations/explain_benchmark.sql
 ```
 
-See [§3.1](#31-index-performance-database_migrationsexplain_benchmarksql).
+See [§4.1](#41-index-performance-database_migrationsexplain_benchmarksql). 
 
 ---
 
-## 8. Quality gates (CI)
+## 9. Quality gates (CI)
 
 On every push / PR: `ruff` (lint) + `mypy` (types) + `pytest` (tests + coverage).
 Zero linter and zero typing errors required.

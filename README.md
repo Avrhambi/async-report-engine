@@ -16,14 +16,14 @@ Redis · pytest + Testcontainers · CI: ruff + mypy + pytest (zero lint / zero t
 ## 1. System overview
 
 <p align="center">
-  <img src="docs/assets/system-overview.svg" alt="System overview" width="100%" />
+  <img src="docs/assets/system-overview.svg" alt="System overview" width="640" />
 </p>
 
 <details>
 <summary>Diagram source (Mermaid)</summary>
 
 ```mermaid
-flowchart LR
+flowchart TD
     Client([Client / Dashboard]) <-->|"POST /events/batch"| API[FastAPI Gateway]
     Client <-->|"POST /reports/generate"| API
     Client <-->|"GET /reports/{task_id}"| API

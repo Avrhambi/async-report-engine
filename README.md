@@ -1,7 +1,7 @@
 # Asynchronous E-Commerce Report Engine
 
-> **Scope contract:** see [INTENT.md](./INTENT.md) — what this service must do and why.
-> **Original brief:** see [ASSIGNMENT.md](./ASSIGNMENT.md).
+> **Scope contract:** see [INTENT.md](./docs/INTENT.md) — what this service must do and why.
+> **Original brief:** see [ASSIGNMENT.md](./docs/ASSIGNMENT.md).
 
 A backend service that ingests high-volume e-commerce order events and produces heavy
 analytical reports **without ever blocking an HTTP request**. Ingestion validates and

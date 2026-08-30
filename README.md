@@ -15,8 +15,14 @@ Redis · pytest + Testcontainers · CI: ruff + mypy + pytest (zero lint / zero t
 
 ## 1. System overview
 
+<p align="center">
+  <img src="docs/assets/system-overview.svg" alt="System overview" width="100%" />
+</p>
+
+<details>
+<summary>Diagram source (Mermaid)</summary>
+
 ```mermaid
-%%{init: {"flowchart": {"useMaxWidth": false, "nodeSpacing": 55, "rankSpacing": 85}, "themeVariables": {"fontSize": "18px"}}}%%
 flowchart LR
     Client([Client / Dashboard]) <-->|"POST /events/batch"| API[FastAPI Gateway]
     Client <-->|"POST /reports/generate"| API
@@ -33,6 +39,7 @@ flowchart LR
     WORKER -->|Store Output| DB
     WORKER -.->|On 3x Failure| DLQ[Dead Letter Queue]
 ```
+</details>
 
 **Clean Architecture** — each layer only talks to the one below it:
 

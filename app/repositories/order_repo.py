@@ -60,15 +60,18 @@ class OrderRepository:
         )
         window = Order.created_at >= since
 
+        # count() -> count(*): keeps every column in this query inside
+        # idx_orders_created_at (key: created_at, INCLUDE: total_amount) so
+        # the totals come from an Index Only Scan.
         totals_stmt = select(
             func.coalesce(func.sum(Order.total_amount), 0).label("revenue"),
-            func.count(Order.id).label("order_count"),
+            func.count().label("order_count"),
             func.coalesce(func.avg(Order.total_amount), 0).label("aov"),
         ).where(window)
         totals = (await self.session.execute(totals_stmt)).one()
 
         region_stmt = (
-            select(Order.region, func.count(Order.id))
+            select(Order.region, func.count())
             .where(window)
             .group_by(Order.region)
             .order_by(Order.region)

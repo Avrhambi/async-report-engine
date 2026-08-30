@@ -115,7 +115,7 @@ def test_report_query_uses_created_at_index_not_seq_scan(pg_session: Session):
         for row in pg_session.execute(
             text(
                 "EXPLAIN "
-                "SELECT count(id), coalesce(sum(total_amount), 0) FROM orders "
+                "SELECT count(*), coalesce(sum(total_amount), 0) FROM orders "
                 "WHERE created_at >= TIMESTAMPTZ '2027-05-30 00:00:00+00' "
                 "AND created_at <= TIMESTAMPTZ '2027-06-01 00:00:00+00'"
             )

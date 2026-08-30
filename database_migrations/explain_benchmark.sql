@@ -35,17 +35,17 @@ VACUUM ANALYZE orders;
 -- the visibility map is set (VACUUM above), otherwise an Index / Bitmap Index
 -- Scan. Any of these beats reading the whole heap.
 EXPLAIN (ANALYZE, BUFFERS)
-SELECT count(id), coalesce(sum(total_amount), 0), coalesce(avg(total_amount), 0)
+SELECT count(*), coalesce(sum(total_amount), 0), coalesce(avg(total_amount), 0)
 FROM orders
 WHERE created_at >= NOW() - interval '2 days'
   AND created_at <= NOW();
 
--- Contrast: with the index dropped, the same query has no choice but a
--- Sequential Scan over every row.
+-- Contrast: with idx_orders_created_at dropped, the same query falls back to
+-- reading the whole table (Seq Scan, or a full scan of a composite index).
 BEGIN;
 DROP INDEX idx_orders_created_at;
 EXPLAIN (ANALYZE, BUFFERS)
-SELECT count(id), coalesce(sum(total_amount), 0), coalesce(avg(total_amount), 0)
+SELECT count(*), coalesce(sum(total_amount), 0), coalesce(avg(total_amount), 0)
 FROM orders
 WHERE created_at >= NOW() - interval '2 days'
   AND created_at <= NOW();

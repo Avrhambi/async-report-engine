@@ -77,10 +77,13 @@ class SyncReportRepository:
         )
         window = (Order.created_at >= lower) & (Order.created_at <= upper)
 
+        # count() -> count(*): every column here lives in
+        # idx_orders_created_at (key: created_at, INCLUDE: total_amount), so
+        # the totals come from an Index Only Scan rather than a heap scan.
         totals = self.session.execute(
             select(
                 func.coalesce(func.sum(Order.total_amount), 0).label("total_revenue"),
-                func.count(Order.id).label("order_count"),
+                func.count().label("order_count"),
                 func.coalesce(func.avg(Order.total_amount), 0).label("aov"),
             ).where(window)
         ).one()

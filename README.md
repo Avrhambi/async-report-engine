@@ -100,7 +100,10 @@ PostgreSQL 16 (absolute times vary by hardware — run the script to get your ow
   reads drop from 2235 buffers to 15 — zero heap fetches once the visibility map is
   synchronized by `VACUUM`.
 
-`test_integration.py` asserts this plan difference in CI against a real PostgreSQL 16.
+`test_integration.py::test_report_query_uses_created_at_index_not_seq_scan` asserts this
+plan difference against a real PostgreSQL 16 (Testcontainers); it runs wherever a Docker
+daemon is reachable — CI on `ubuntu-latest`, or `docker-compose run --rm api pytest`
+locally — and skips otherwise.
 
 ```bash
 docker-compose exec db psql -U user -d analytics_db -f /database_migrations/explain_benchmark.sql

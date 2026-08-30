@@ -27,8 +27,13 @@ def pg_session() -> Iterator[Session]:
         # Only a genuine "no Docker daemon reachable" should skip. Any other
         # error (bad image, fixture bug) must surface as a failure.
         from docker.errors import DockerException
+        from requests.exceptions import ConnectionError as RequestsConnectionError
 
-        if isinstance(exc, DockerException) or "docker" in str(exc).lower():
+        daemon_unreachable = (
+            isinstance(exc, (DockerException, RequestsConnectionError, ConnectionError))
+            or "docker" in str(exc).lower()
+        )
+        if daemon_unreachable:
             pytest.skip(f"Docker unavailable: {exc}")
         raise
 

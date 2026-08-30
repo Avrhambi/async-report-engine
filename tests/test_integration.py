@@ -6,50 +6,71 @@ dev box without a running daemon).
 from __future__ import annotations
 
 import datetime
+import os
 from collections.abc import Iterator
 
 import pytest
+from app.domain.models import Base
+from app.repositories.sync_report_repo import SyncReportRepository
+from sqlalchemy import create_engine, text
+from sqlalchemy.orm import Session, sessionmaker
 
-tc_postgres = pytest.importorskip("testcontainers.postgres")
-
-from app.domain.models import Base  # noqa: E402
-from app.repositories.sync_report_repo import SyncReportRepository  # noqa: E402
-from sqlalchemy import create_engine  # noqa: E402
-from sqlalchemy.orm import Session, sessionmaker  # noqa: E402
+# When TEST_DATABASE_URL points at an already-running Postgres 16 (the
+# docker-compose `db` service, or a CI `services: postgres`), use it directly
+# and skip testcontainers entirely. This is how the suite runs inside the
+# compose network, where testcontainers' default-bridge port publishing is
+# unreachable. Otherwise fall back to spinning a throwaway container.
+_EXTERNAL_DB_URL = os.getenv("TEST_DATABASE_URL")
 
 
 @pytest.fixture(scope="module")
 def pg_session() -> Iterator[Session]:
-    container = tc_postgres.PostgresContainer("postgres:16")
-    try:
-        container.start()
-    except Exception as exc:  # pragma: no cover - env-dependent
-        # Only a genuine "no Docker daemon reachable" should skip. Any other
-        # error (bad image, fixture bug) must surface as a failure.
-        from docker.errors import DockerException
-        from requests.exceptions import ConnectionError as RequestsConnectionError
-
-        daemon_unreachable = (
-            isinstance(exc, (DockerException, RequestsConnectionError, ConnectionError))
-            or "docker" in str(exc).lower()
+    container = None
+    if _EXTERNAL_DB_URL:
+        url = _EXTERNAL_DB_URL.replace("+asyncpg", "+psycopg").replace(
+            "psycopg2", "psycopg"
         )
-        if daemon_unreachable:
-            pytest.skip(f"Docker unavailable: {exc}")
-        raise
+    else:
+        tc_postgres = pytest.importorskip("testcontainers.postgres")
+        container = tc_postgres.PostgresContainer("postgres:16")
+        try:
+            container.start()
+        except Exception as exc:  # pragma: no cover - env-dependent
+            # Only a genuine "no Docker daemon reachable" should skip. Any other
+            # error (bad image, fixture bug) must surface as a failure.
+            from docker.errors import DockerException
+            from requests.exceptions import ConnectionError as RequestsConnectionError
 
-    url = container.get_connection_url().replace("psycopg2", "psycopg")
+            daemon_unreachable = (
+                isinstance(
+                    exc,
+                    (DockerException, RequestsConnectionError, ConnectionError),
+                )
+                or "docker" in str(exc).lower()
+            )
+            if daemon_unreachable:
+                pytest.skip(f"Docker unavailable: {exc}")
+            raise
+        url = container.get_connection_url().replace("psycopg2", "psycopg")
+
     engine = create_engine(url)
     # create_all emits the indexes declared in models.py __table_args__.
     Base.metadata.create_all(engine)
 
     maker = sessionmaker(bind=engine, expire_on_commit=False)
     session = maker()
+    if _EXTERNAL_DB_URL:
+        # Shared DB may hold rows from a prior run; the assertions below are
+        # exact counts against a module-scoped session, so start clean.
+        session.execute(text("TRUNCATE orders"))
+        session.commit()
     try:
         yield session
     finally:
         session.close()
         engine.dispose()
-        container.stop()
+        if container is not None:
+            container.stop()
 
 
 def _order(order_id: str, status: str, region: str, amount: str, day: str) -> dict:

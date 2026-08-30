@@ -7,6 +7,25 @@ on:
 jobs:
   quality:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: user
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: analytics_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U user -d analytics_db"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # Makes tests/test_integration.py run against this service instead of
+      # spinning a testcontainers image (the runner has Docker, but the
+      # external DB is faster and is the same Postgres 16).
+      TEST_DATABASE_URL: postgresql+psycopg://user:password@localhost:5432/analytics_db
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -17,5 +36,5 @@ jobs:
         run: ruff check app tests
       - name: Types
         run: mypy app
-      - name: Tests
+      - name: Tests (unit + integration)
         run: pytest -v --cov=app tests/

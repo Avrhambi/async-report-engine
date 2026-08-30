@@ -3,7 +3,7 @@ from __future__ import annotations
 import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 # ---------------------------------------------------------------------------
 # Ingestion
@@ -43,6 +43,12 @@ class ReportGenerateRequest(BaseModel):
     date_from: datetime.date
     date_to: datetime.date
     group_by: list[Literal["region", "status"]] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _range_is_ordered(self) -> ReportGenerateRequest:
+        if self.date_to < self.date_from:
+            raise ValueError("date_to must not be earlier than date_from")
+        return self
 
 
 class ReportGenerateResponse(BaseModel):

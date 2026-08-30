@@ -89,6 +89,21 @@ def test_generate_report_returns_task_id(client, monkeypatch):
     assert resp.json() == {"task_id": "rpt_abc123", "status": "PENDING"}
 
 
+def test_generate_report_rejects_reversed_date_range(client):
+    resp = client.post(
+        "/api/v1/reports/generate",
+        json={
+            "report_type": "revenue_summary",
+            "date_from": "2026-08-31",
+            "date_to": "2026-08-01",
+        },
+    )
+    assert resp.status_code == 422
+    body = resp.json()
+    assert isinstance(body["detail"], list)
+    assert "date_to must not be earlier than date_from" in body["detail"][0]["msg"]
+
+
 def test_get_report_unknown_task_id_is_structured_404(client, monkeypatch):
     monkeypatch.setattr(
         routes.ReportService,

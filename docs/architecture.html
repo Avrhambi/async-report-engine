@@ -1,0 +1,566 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Async Report Engine — Interactive Architecture</title>
+<style>
+  :root {
+    --bg: #0f1420;
+    --panel: #161d2e;
+    --panel-border: #2a3448;
+    --text: #e6ebf5;
+    --muted: #93a1bd;
+    --accent: #5fb0ff;
+    --accent-2: #7ee0c0;
+    --decision: #f2b25c;
+    --edge: #3c4a68;
+    --danger: #ff6b6b;
+    --api: #5fb0ff;
+    --db: #7ee0c0;
+    --mq: #f2b25c;
+    --cache: #ff9ecb;
+    --worker: #b18aff;
+    --dlq: #ff6b6b;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  header {
+    padding: 20px 24px 12px;
+    border-bottom: 1px solid var(--panel-border);
+  }
+  header h1 {
+    margin: 0 0 4px;
+    font-size: 1.3rem;
+  }
+  header p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.9rem;
+    max-width: 900px;
+  }
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px;
+    padding: 10px 24px;
+    font-size: 0.78rem;
+    color: var(--muted);
+    border-bottom: 1px solid var(--panel-border);
+  }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .swatch { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+  .layout {
+    display: flex;
+    height: calc(100vh - 108px);
+  }
+  .diagram-wrap {
+    flex: 1 1 auto;
+    overflow: auto;
+    padding: 24px;
+  }
+  svg {
+    display: block;
+    min-width: 980px;
+  }
+  .node rect {
+    stroke-width: 1.5;
+    rx: 10;
+    ry: 10;
+    fill: var(--panel);
+  }
+  .node text {
+    fill: var(--text);
+    font-size: 13px;
+    font-weight: 600;
+    pointer-events: none;
+  }
+  .node .sub {
+    fill: var(--muted);
+    font-size: 10.5px;
+    font-weight: 400;
+  }
+  .edge-path {
+    fill: none;
+    stroke: var(--edge);
+    stroke-width: 2;
+  }
+  .edge-label {
+    fill: var(--muted);
+    font-size: 10.5px;
+  }
+  .marker-endpoint, .marker-decision {
+    cursor: pointer;
+  }
+  .marker-endpoint circle {
+    fill: var(--api);
+    stroke: #0b1220;
+    stroke-width: 2;
+  }
+  .marker-decision circle {
+    fill: var(--decision);
+    stroke: #0b1220;
+    stroke-width: 2;
+  }
+  .marker-endpoint text, .marker-decision text {
+    fill: #0b1220;
+    font-size: 11px;
+    font-weight: 700;
+    text-anchor: middle;
+    dominant-baseline: central;
+    pointer-events: none;
+  }
+  .marker-endpoint:hover circle, .marker-decision:hover circle,
+  .marker-endpoint:focus circle, .marker-decision:focus circle {
+    filter: brightness(1.25);
+  }
+  .marker-endpoint.active circle, .marker-decision.active circle {
+    stroke: #fff;
+  }
+  aside {
+    width: 420px;
+    flex: 0 0 420px;
+    border-left: 1px solid var(--panel-border);
+    background: var(--panel);
+    padding: 20px;
+    overflow-y: auto;
+  }
+  aside .placeholder {
+    color: var(--muted);
+    font-size: 0.9rem;
+    line-height: 1.6;
+  }
+  aside .placeholder h3 { color: var(--text); margin-top: 0; }
+  .panel-kicker {
+    display: inline-block;
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    padding: 3px 8px;
+    border-radius: 4px;
+    margin-bottom: 10px;
+  }
+  .kicker-endpoint { background: rgba(95,176,255,0.18); color: var(--accent); }
+  .kicker-decision { background: rgba(242,178,92,0.18); color: var(--decision); }
+  .panel-title {
+    margin: 0 0 4px;
+    font-size: 1.15rem;
+  }
+  .panel-sub {
+    margin: 0 0 16px;
+    color: var(--muted);
+    font-size: 0.85rem;
+  }
+  .field-label {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+    margin: 16px 0 6px;
+  }
+  .field-label:first-of-type { margin-top: 0; }
+  pre {
+    background: #0b1220;
+    border: 1px solid var(--panel-border);
+    border-radius: 8px;
+    padding: 12px;
+    overflow-x: auto;
+    font-size: 0.78rem;
+    line-height: 1.5;
+    margin: 0;
+  }
+  code { font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace; }
+  .badge-method {
+    display: inline-block;
+    font-weight: 700;
+    font-size: 0.78rem;
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: rgba(126,224,192,0.18);
+    color: var(--accent-2);
+    margin-right: 8px;
+  }
+  .badge-status {
+    display: inline-block;
+    font-size: 0.78rem;
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: rgba(255,255,255,0.08);
+    color: var(--text);
+  }
+  .kv-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--panel-border);
+    font-size: 0.85rem;
+  }
+  .kv-row:last-child { border-bottom: none; }
+  .kv-row .k { color: var(--muted); }
+  .decision-box {
+    border: 1px solid var(--panel-border);
+    border-radius: 8px;
+    padding: 12px;
+    margin-bottom: 10px;
+  }
+  .decision-box.chosen { border-color: rgba(126,224,192,0.4); background: rgba(126,224,192,0.07); }
+  .decision-box.rejected { border-color: rgba(255,107,107,0.35); background: rgba(255,107,107,0.06); }
+  .decision-box .label {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-weight: 700;
+    margin-bottom: 4px;
+  }
+  .decision-box.chosen .label { color: var(--accent-2); }
+  .decision-box.rejected .label { color: var(--danger); }
+  .decision-box p { margin: 0; font-size: 0.85rem; line-height: 1.5; }
+  .close-btn {
+    background: none;
+    border: 1px solid var(--panel-border);
+    color: var(--muted);
+    border-radius: 6px;
+    padding: 4px 10px;
+    cursor: pointer;
+    font-size: 0.78rem;
+    float: right;
+  }
+  .close-btn:hover { color: var(--text); border-color: var(--muted); }
+  .why { margin-top: 14px; }
+  .why p { font-size: 0.85rem; line-height: 1.6; color: var(--text); }
+  @media (max-width: 900px) {
+    .layout { flex-direction: column; height: auto; }
+    aside { width: auto; flex: none; border-left: none; border-top: 1px solid var(--panel-border); }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Asynchronous E-Commerce Report Engine — Interactive Architecture</h1>
+  <p>Click a numbered endpoint marker (blue) to see its request/response contract, or a
+     lettered decision marker (amber) to see what was chosen, what was rejected, and why.
+     This replaces the static flow diagram in the README.</p>
+</header>
+<div class="legend">
+  <span><span class="swatch" style="background:var(--api)"></span> FastAPI Gateway</span>
+  <span><span class="swatch" style="background:var(--db)"></span> PostgreSQL</span>
+  <span><span class="swatch" style="background:var(--mq)"></span> RabbitMQ</span>
+  <span><span class="swatch" style="background:var(--cache)"></span> Redis</span>
+  <span><span class="swatch" style="background:var(--worker)"></span> Celery Worker</span>
+  <span><span class="swatch" style="background:var(--dlq)"></span> Dead Letter Queue</span>
+  <span><span class="swatch" style="background:var(--accent)"></span> Endpoint marker (click)</span>
+  <span><span class="swatch" style="background:var(--decision)"></span> Decision marker (click)</span>
+</div>
+<div class="layout">
+  <div class="diagram-wrap">
+    <svg id="diagram" viewBox="0 0 1180 720" width="1180" height="720" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="var(--edge)"></path>
+        </marker>
+      </defs>
+
+      <!-- Edges -->
+      <g class="edges">
+        <path class="edge-path" d="M150,100 C230,100 230,100 300,100" marker-end="url(#arrow)"></path>
+        <path class="edge-path" d="M150,140 C230,140 230,180 300,180" marker-end="url(#arrow)"></path>
+        <path class="edge-path" d="M150,180 C230,180 230,260 300,260" marker-end="url(#arrow)"></path>
+        <path class="edge-path" d="M150,220 C230,220 230,340 300,340" marker-end="url(#arrow)"></path>
+
+        <path class="edge-path" d="M460,120 C560,120 560,140 640,140" marker-end="url(#arrow)"></path>
+        <text class="edge-label" x="500" y="112">1. bulk insert</text>
+
+        <path class="edge-path" d="M460,180 C560,180 560,300 660,300" marker-end="url(#arrow)"></path>
+        <text class="edge-label" x="500" y="205">2. dispatch job</text>
+
+        <path class="edge-path" d="M460,220 C540,220 540,220 640,220" marker-end="url(#arrow)"></path>
+        <text class="edge-label" x="480" y="212">cache-aside</text>
+
+        <path class="edge-path" d="M460,260 C560,260 560,180 640,150" marker-end="url(#arrow)"></path>
+        <text class="edge-label" x="500" y="270">read on miss</text>
+
+        <path class="edge-path" d="M780,300 C830,300 830,140 830,140 C830,140 800,140 800,140" marker-end="url(#arrow)"></path>
+        <text class="edge-label" x="790" y="330">consume task</text>
+
+        <path class="edge-path" d="M900,380 C960,380 960,180 800,180" marker-end="url(#arrow)"></path>
+        <text class="edge-label" x="900" y="400">heavy aggregation SQL</text>
+
+        <path class="edge-path" d="M900,420 C980,420 980,200 800,210" marker-end="url(#arrow)"></path>
+        <text class="edge-label" x="900" y="440">store output</text>
+
+        <path class="edge-path" d="M900,460 C960,460 960,540 900,560" marker-end="url(#arrow)" stroke-dasharray="5,4"></path>
+        <text class="edge-label" x="905" y="510">on 3x failure</text>
+      </g>
+
+      <!-- Nodes -->
+      <g class="node" data-node="client">
+        <rect x="20" y="60" width="130" height="200" fill="var(--panel)" stroke="var(--accent)"></rect>
+        <text x="85" y="155" text-anchor="middle">Client /</text>
+        <text x="85" y="172" text-anchor="middle">Dashboard</text>
+      </g>
+
+      <g class="node" data-node="api">
+        <rect x="300" y="80" width="160" height="220" stroke="var(--api)"></rect>
+        <text x="380" y="185" text-anchor="middle">FastAPI</text>
+        <text x="380" y="202" text-anchor="middle">Gateway</text>
+        <text class="sub" x="380" y="222" text-anchor="middle">app/api/</text>
+      </g>
+
+      <g class="node" data-node="db">
+        <rect x="640" y="90" width="160" height="90" stroke="var(--db)"></rect>
+        <text x="720" y="130" text-anchor="middle">PostgreSQL 16</text>
+        <text class="sub" x="720" y="148" text-anchor="middle">orders · reports</text>
+      </g>
+
+      <g class="node" data-node="redis">
+        <rect x="640" y="190" width="160" height="70" stroke="var(--cache)"></rect>
+        <text x="720" y="225" text-anchor="middle">Redis Cache</text>
+        <text class="sub" x="720" y="242" text-anchor="middle">cache-aside</text>
+      </g>
+
+      <g class="node" data-node="mq">
+        <rect x="660" y="270" width="140" height="70" stroke="var(--mq)"></rect>
+        <text x="730" y="305" text-anchor="middle">RabbitMQ</text>
+        <text class="sub" x="730" y="322" text-anchor="middle">Broker</text>
+      </g>
+
+      <g class="node" data-node="worker">
+        <rect x="880" y="360" width="160" height="100" stroke="var(--worker)"></rect>
+        <text x="960" y="405" text-anchor="middle">Celery Worker</text>
+        <text class="sub" x="960" y="423" text-anchor="middle">app/workers/</text>
+      </g>
+
+      <g class="node" data-node="dlq">
+        <rect x="820" y="560" width="160" height="80" stroke="var(--dlq)"></rect>
+        <text x="900" y="600" text-anchor="middle">Dead Letter</text>
+        <text x="900" y="617" text-anchor="middle">Queue</text>
+      </g>
+
+      <!-- Endpoint markers (Client <-> API edges) -->
+      <g class="marker-endpoint" tabindex="0" data-endpoint="events-batch" transform="translate(225,100)">
+        <circle r="14"></circle>
+        <text>1</text>
+      </g>
+      <g class="marker-endpoint" tabindex="0" data-endpoint="reports-generate" transform="translate(225,155)">
+        <circle r="14"></circle>
+        <text>2</text>
+      </g>
+      <g class="marker-endpoint" tabindex="0" data-endpoint="reports-status" transform="translate(225,220)">
+        <circle r="14"></circle>
+        <text>3</text>
+      </g>
+      <g class="marker-endpoint" tabindex="0" data-endpoint="analytics-metrics" transform="translate(225,285)">
+        <circle r="14"></circle>
+        <text>4</text>
+      </g>
+
+      <!-- Decision markers -->
+      <g class="marker-decision" tabindex="0" data-decision="background-exec" transform="translate(570,150)">
+        <circle r="13"></circle>
+        <text>A</text>
+      </g>
+      <g class="marker-decision" tabindex="0" data-decision="broker" transform="translate(650,340)">
+        <circle r="13"></circle>
+        <text>B</text>
+      </g>
+      <g class="marker-decision" tabindex="0" data-decision="index" transform="translate(720,60)">
+        <circle r="13"></circle>
+        <text>C</text>
+      </g>
+      <g class="marker-decision" tabindex="0" data-decision="ingest-write" transform="translate(500,88)">
+        <circle r="13"></circle>
+        <text>D</text>
+      </g>
+      <g class="marker-decision" tabindex="0" data-decision="dashboard-reads" transform="translate(600,180)">
+        <circle r="13"></circle>
+        <text>E</text>
+      </g>
+      <g class="marker-decision" tabindex="0" data-decision="idempotency" transform="translate(225,60)">
+        <circle r="13"></circle>
+        <text>F</text>
+      </g>
+      <g class="marker-decision" tabindex="0" data-decision="dead-letter" transform="translate(940,540)">
+        <circle r="13"></circle>
+        <text>G</text>
+      </g>
+    </svg>
+  </div>
+
+  <aside id="panel">
+    <div class="placeholder">
+      <h3>Nothing selected</h3>
+      <p>Click a blue numbered marker on an arrow between the client and the API to see
+         that endpoint's request/response contract, or an amber lettered marker to see
+         the engineering decision behind that part of the flow — what was chosen, what
+         was rejected, and why.</p>
+      <p>Markers 1–4 correspond to the four routes in the API reference. Markers A–G
+         correspond to the trade-offs table and the edge cases the system handles.</p>
+    </div>
+  </aside>
+</div>
+
+<script>
+(function () {
+  var panel = document.getElementById('panel');
+
+  var endpoints = {
+    'events-batch': {
+      method: 'POST', path: '/api/v1/events/batch', status: '202 Accepted',
+      summary: 'Ingest a batch of order events. Validates, bulk-inserts, returns immediately — no compute.',
+      headers: [{ k: 'Idempotency-Key', v: 'required — replaying the same key is a no-op (no duplicate rows)' }],
+      request: '{\n  "events": [ {\n    "order_id": "ord_1001", "customer_id": "cus_42", "status": "paid",\n    "total_amount": 129.90, "region": "EU", "created_at": "2026-08-30T10:15:00Z"\n  } ]\n}',
+      response: '{ "status": "accepted", "ingested": 1, "duplicates": 0 }'
+    },
+    'reports-generate': {
+      method: 'POST', path: '/api/v1/reports/generate', status: '202 Accepted',
+      summary: 'Dispatch a background aggregation job to Celery/RabbitMQ. Returns a task_id to poll — never blocks on the aggregation.',
+      headers: [],
+      request: '{\n  "report_type": "revenue_summary", "date_from": "2026-08-01",\n  "date_to": "2026-08-31", "group_by": ["region", "status"]\n}',
+      response: '{ "task_id": "rpt_7f3a2c", "status": "PENDING" }'
+    },
+    'reports-status': {
+      method: 'GET', path: '/api/v1/reports/{task_id}', status: '200 OK',
+      summary: 'Poll one report resource. status moves PENDING → STARTED → SUCCESS, or → FAILURE, or → DEAD_LETTER after repeated failure. result is null until SUCCESS.',
+      headers: [],
+      request: '(no body)',
+      response: '{ "task_id": "rpt_7f3a2c", "status": "SUCCESS", "result": {\n  "total_revenue": 184230.55, "order_count": 1920, "average_order_value": 95.95,\n  "by_region": { "EU": 90120.00, "US": 71110.55, "APAC": 23000.00 },\n  "by_day": [ { "day": "2026-08-01", "revenue": 6011.20 } ],\n  "growth_vs_previous_period": 0.14\n} }'
+    },
+    'analytics-metrics': {
+      method: 'GET', path: '/api/v1/analytics/metrics', status: '200 OK',
+      summary: 'Rolling summary (default last 24h). Cache-Aside: served from Redis on a hit; on a miss, aggregated from PostgreSQL, cached with a short TTL, invalidated on new ingest.',
+      headers: [],
+      request: '(no body)',
+      response: '{ "window": "24h", "revenue": 12043.10, "order_count": 138,\n  "average_order_value": 87.27, "orders_by_region": { "EU": 61, "US": 55, "APAC": 22 } }'
+    }
+  };
+
+  var decisions = {
+    'background-exec': {
+      title: 'Background execution', chosen: 'Celery + RabbitMQ',
+      rejected: 'FastAPI BackgroundTasks',
+      why: 'BackgroundTasks run in the API process — a heavy aggregation would compete with the event loop and die with the pod on redeploy. Celery workers are separate processes in separate containers, scale independently, and survive an API restart.'
+    },
+    'broker': {
+      title: 'Broker', chosen: 'RabbitMQ',
+      rejected: 'Redis Pub/Sub / Redis lists',
+      why: "Pub/Sub drops messages with no consumer online — unacceptable for a report job. RabbitMQ gives durable queues, per-message acknowledgement, and native dead-letter routing. Redis stays dedicated to the cache so a queue backlog can't evict cache entries."
+    },
+    'index': {
+      title: "created_at index", chosen: 'B-Tree INCLUDE (total_amount)',
+      rejected: 'Hash index',
+      why: 'Reports filter a date range (created_at BETWEEN …). Hash indexes only serve equality. The B-Tree also supports an Index Only Scan for count/sum/avg because total_amount is in the leaf.'
+    },
+    'ingest-write': {
+      title: 'Ingestion write', chosen: 'Single bulk INSERT',
+      rejected: 'Row-by-row ORM inserts',
+      why: 'One round trip and one transaction for the whole batch; keeps POST /events/batch in the low-milliseconds range regardless of batch size.'
+    },
+    'dashboard-reads': {
+      title: 'Dashboard reads', chosen: 'Cache-Aside (Redis)',
+      rejected: 'Read replica / materialized view',
+      why: "The metrics window is small and hot; a TTL'd cache entry absorbs the repeated dashboard polls with no extra infrastructure, and is invalidated on ingest."
+    },
+    'idempotency': {
+      title: 'Idempotency', chosen: 'Idempotency-Key → hash in Redis, TTL',
+      rejected: 'DB unique constraint only',
+      why: "Stops a retried batch before it touches Postgres; the order_id unique constraint is the backstop for anything that slips through."
+    },
+    'dead-letter': {
+      title: 'Permanently failing job', chosen: 'DEAD_LETTER routing via on_failure',
+      rejected: 'Letting the task block/retry the main queue indefinitely',
+      why: "A task that fails 3 consecutive times (autoretry_for, exponential backoff) is routed to a DEAD_LETTER state via the task's on_failure handler instead of blocking the main queue. The report resource reflects status = DEAD_LETTER so the client stops polling."
+    }
+  };
+
+  function clearActive() {
+    document.querySelectorAll('.marker-endpoint.active, .marker-decision.active')
+      .forEach(function (el) { el.classList.remove('active'); });
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+
+  function renderEndpoint(ep) {
+    var headersHtml = ep.headers.length
+      ? ep.headers.map(function (h) {
+          return '<div class="kv-row"><span class="k">' + escapeHtml(h.k) + '</span><span>' + escapeHtml(h.v) + '</span></div>';
+        }).join('')
+      : '<div class="kv-row"><span class="k">(none required)</span><span></span></div>';
+
+    panel.innerHTML =
+      '<button class="close-btn" id="closeBtn">Close ✕</button>' +
+      '<div class="panel-kicker kicker-endpoint">Endpoint</div>' +
+      '<h2 class="panel-title"><span class="badge-method">' + escapeHtml(ep.method) + '</span>' + escapeHtml(ep.path) + '</h2>' +
+      '<p class="panel-sub">' + escapeHtml(ep.summary) + ' <span class="badge-status">' + escapeHtml(ep.status) + '</span></p>' +
+      '<div class="field-label">Headers</div>' + headersHtml +
+      '<div class="field-label">Request</div><pre><code>' + escapeHtml(ep.request) + '</code></pre>' +
+      '<div class="field-label">Response</div><pre><code>' + escapeHtml(ep.response) + '</code></pre>';
+
+    document.getElementById('closeBtn').addEventListener('click', resetPanel);
+  }
+
+  function renderDecision(d) {
+    panel.innerHTML =
+      '<button class="close-btn" id="closeBtn">Close ✕</button>' +
+      '<div class="panel-kicker kicker-decision">Decision</div>' +
+      '<h2 class="panel-title">' + escapeHtml(d.title) + '</h2>' +
+      '<div class="decision-box chosen"><div class="label">Chosen</div><p>' + escapeHtml(d.chosen) + '</p></div>' +
+      '<div class="decision-box rejected"><div class="label">Rejected alternative</div><p>' + escapeHtml(d.rejected) + '</p></div>' +
+      '<div class="why"><div class="field-label">Why</div><p>' + escapeHtml(d.why) + '</p></div>';
+
+    document.getElementById('closeBtn').addEventListener('click', resetPanel);
+  }
+
+  function resetPanel() {
+    clearActive();
+    panel.innerHTML =
+      '<div class="placeholder"><h3>Nothing selected</h3>' +
+      '<p>Click a blue numbered marker on an arrow between the client and the API to see ' +
+      "that endpoint's request/response contract, or an amber lettered marker to see " +
+      'the engineering decision behind that part of the flow — what was chosen, what ' +
+      'was rejected, and why.</p>' +
+      '<p>Markers 1–4 correspond to the four routes in the API reference. Markers A–G ' +
+      'correspond to the trade-offs table and the edge cases the system handles.</p></div>';
+  }
+
+  function activate(el, renderFn, data) {
+    clearActive();
+    el.classList.add('active');
+    renderFn(data);
+  }
+
+  document.querySelectorAll('.marker-endpoint').forEach(function (el) {
+    var key = el.getAttribute('data-endpoint');
+    var data = endpoints[key];
+    el.addEventListener('click', function () { activate(el, renderEndpoint, data); });
+    el.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); activate(el, renderEndpoint, data); }
+    });
+  });
+
+  document.querySelectorAll('.marker-decision').forEach(function (el) {
+    var key = el.getAttribute('data-decision');
+    var data = decisions[key];
+    el.addEventListener('click', function () { activate(el, renderDecision, data); });
+    el.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); activate(el, renderDecision, data); }
+    });
+  });
+
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') resetPanel();
+  });
+})();
+</script>
+</body>
+</html>

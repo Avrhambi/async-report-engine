@@ -15,23 +15,19 @@ Redis · pytest + Testcontainers · CI: ruff + mypy + pytest (zero lint / zero t
 
 ## 1. System overview
 
-```mermaid
-flowchart TD
-    Client(["Client / Dashboard"]) <-->|"POST /events/batch"| API["FastAPI Gateway"]
-    Client <-->|"POST /reports/generate"| API
-    Client <-->|"GET /reports/{task_id}"| API
-    Client <--->|"GET /analytics/metrics"| API
+**[Open the interactive architecture diagram →](./docs/architecture.html)**
 
-    API -->|"1. Bulk Insert"| DB[("PostgreSQL 16")]
-    API -->|"2. Dispatch Job"| RMQ["RabbitMQ Broker"]
-    API <-->|"Cache-Aside"| REDIS[("Redis Cache")]
-    API <-->|"Read on cache miss"| DB
+Click any endpoint marker on the diagram for its full request/response contract, or any
+decision marker for the chosen-vs-rejected reasoning behind that part of the design
+(the same content as the trade-offs table in [§3](#3-engineering-trade-offs--decisions)).
 
-    RMQ -->|"Consume Task"| WORKER["Celery Worker"]
-    WORKER -->|"Heavy Aggregation SQL"| DB
-    WORKER -->|"Store Output"| DB
-    WORKER -.->|"On 3x Failure"| DLQ["Dead Letter Queue"]
-```
+In short: the client talks to the FastAPI Gateway over four routes. `POST
+/events/batch` bulk-inserts into PostgreSQL. `POST /reports/generate` dispatches a job
+onto RabbitMQ for a Celery worker to pick up, run the heavy aggregation SQL against
+PostgreSQL, and write the result back; `GET /reports/{task_id}` polls that result. `GET
+/analytics/metrics` reads through a Redis cache-aside layer backed by PostgreSQL. A
+report that fails three times in a row is routed to a dead-letter state instead of
+blocking the queue.
 
 **Clean Architecture** — each layer only talks to the one below it:
 
